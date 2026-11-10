@@ -256,8 +256,19 @@ export class ReadAloud {
   setRate(r) { this.rate = r; try { localStorage.setItem('lt-rate', r); } catch {} }
   toggle() {
     this.on = !this.on;
-    if (this.on) { if (!this.voice) this.pickVoice(); speechSynthesis.speak(new SpeechSynthesisUtterance(' ')); } // unlocks audio on iOS
-    else speechSynthesis.cancel();
+    if (this.on) {
+      // Phones only allow speech that starts directly inside the tap, so speak a real
+      // sentence synchronously here - this unlocks audio for the rest of the session.
+      if (!this.voice) this.pickVoice();
+      speechSynthesis.cancel();
+      const u = new SpeechSynthesisUtterance('English sound is on.');
+      if (this.voice) { u.voice = this.voice; u.lang = this.voice.lang; } else u.lang = 'en-US';
+      u.rate = this.rate;
+      u.onstart = () => this.onState?.('speaking'); u.onend = () => this.onState?.('idle');
+      u.onerror = (e) => { if (e.error !== 'interrupted' && e.error !== 'canceled') this.onState?.('error', e.error); };
+      this._keep = [u];
+      speechSynthesis.speak(u);
+    } else speechSynthesis.cancel();
     return this.on;
   }
   say(text, force = false) {
@@ -265,7 +276,7 @@ export class ReadAloud {
     if (!this.voice) this.pickVoice();
     const synth = speechSynthesis;
     // If we fall far behind, skip the backlog instead of lagging further.
-    const flush = force || synth.pending;
+    const flush = (force && synth.speaking) || synth.pending;
     if (flush) synth.cancel();
     const make = (voice) => {
       const u = new SpeechSynthesisUtterance(text);
@@ -287,8 +298,9 @@ export class ReadAloud {
     // Chromium can garbage-collect utterances before they play: keep references.
     this._keep = (this._keep || []).slice(-5); this._keep.push(u);
     synth.resume();
-    // Speaking in the same tick as cancel() is silently dropped in Chrome/Edge.
-    setTimeout(() => synth.speak(u), flush ? 80 : 0);
+    // Speaking in the same tick as cancel() is silently dropped in Chrome/Edge, so wait a moment
+    // after a cancel; otherwise speak at once (keeps a button tap's permission on phones).
+    if (flush) setTimeout(() => synth.speak(u), 80); else synth.speak(u);
     // Watchdog: if nothing started after 3 s, the engine is stuck - reset and try once more.
     setTimeout(() => {
       if (!started && this._keep.includes(u)) {

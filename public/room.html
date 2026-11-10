@@ -93,6 +93,9 @@
   </aside>
 </div>
 
+<div id="soundHelp" class="notice hidden" style="position:fixed; left:12px; right:12px; bottom:96px; z-index:6; font-size:17px; background:#2a2210; display:flex; gap:12px; align-items:flex-start">
+  <span id="soundHelpText" style="flex:1"></span><button class="btn small ghost" id="soundHelpClose">OK</button>
+</div>
 <button class="btn hear" id="listen">&#128264; Tap to hear English</button>
 
 <script type="module">
@@ -133,8 +136,23 @@ function listenLabel() {
   $('#listen').classList.toggle('on', voice.on);
   $('#listen').innerHTML = voice.on ? '&#128266; English sound is ON &middot; tap to stop' : '&#128264; Tap to hear English';
 }
-$('#listen').onclick = () => { voice.toggle(); listenLabel(); if (voice.on) voice.say('English sound is on.', true); };
-voice.onState = (st, err) => { if (st === 'error') setState('Sound problem - open Settings and pick another voice', 'paused'); };
+const isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+let heard = false;
+$('#listen').onclick = () => {
+  voice.toggle(); listenLabel();
+  heard = false;
+  // If nothing has been spoken a few seconds after turning sound on, show phone-specific help.
+  if (voice.on) setTimeout(() => { if (voice.on && !heard) $('#soundHelp').classList.remove('hidden'); }, 4000);
+  else $('#soundHelp').classList.add('hidden');
+};
+voice.onState = (st, err) => {
+  if (st === 'speaking') { heard = true; $('#soundHelp').classList.add('hidden'); }
+  if (st === 'error') { setState('Sound problem - open Settings and pick another voice', 'paused'); $('#soundHelp').classList.remove('hidden'); }
+};
+$('#soundHelpText').innerHTML = isIOS
+  ? '<b>No sound?</b> Flip the <b>silent switch</b> on the side of your iPhone (no orange showing) and turn the volume up. Then tap the blue button twice.'
+  : '<b>No sound?</b> Turn your volume up, check this browser tab is not muted, then tap the blue button twice.';
+$('#soundHelpClose').onclick = () => $('#soundHelp').classList.add('hidden');
 
 // ---------- screens ----------
 function setState(text, cls = '') { $('#stateText').textContent = text; $('#stateText').className = cls; }
