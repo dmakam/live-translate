@@ -4,10 +4,20 @@ services:
     container_name: live-translate
     restart: unless-stopped
     env_file: .env
+    environment:
+      TTS_URL: http://live-translate-tts:8000
     mem_limit: 160m
     networks: [caddy]
     volumes:
       - live-translate-data:/app/data   # saved event links survive redeploys
+
+  # Natural AI voice (open-source Kokoro model, runs on the CPU)
+  tts:
+    build: ./tts
+    container_name: live-translate-tts
+    restart: unless-stopped
+    mem_limit: 900m
+    networks: [caddy]
 
 volumes:
   live-translate-data:

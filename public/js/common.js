@@ -222,11 +222,43 @@ export function voiceInfo(v) {
   return { accent, gender, natural, label: (natural === 2 ? '\u2605 ' : '') + [name, accent, gender].filter(Boolean).join(' \u00b7 ') };
 }
 
+// ---------------- natural AI voice player ----------------
+// Plays MP3 lines made by the server's AI voice. One <audio> element is unlocked by the
+// first tap and reused, which is what phones require.
+const SILENT_MP3 = 'data:audio/mpeg;base64,//OExAAAAAAAAAAAAFhpbmcAAAAPAAAABwAAAWgAJCQkJCQkJCQkJCQkJCRJSUlJSUlJSUlJSUlJSW1tbW1tbW1tbW1tbW1tkpKSkpKSkpKSkpKSkpKStra2tra2tra2tra2trbb29vb29vb29vb29vb2///////////////////AAAAPExBTUUzLjEwMAR4AAAAAAAAAAAVCCQEICEAAcwAAAFo3WBJTQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA//MUxAAAAANIAAAAAExBTUUzLjEwMFVV//MUxAsAAANIAAAAAFVVVVVVVVVVVVVV//MUxBYAAANIAAAAAFVVVVVVVVVVVVVV//MUxCEAAANIAAAAAFVVVVVVVVVVVVVV//MUxCwAAANIAAAAAFVVVVVVVVVVVVVV//MUxDcAAANIAAAAAFVVVVVVVVVVVVVV//MUxEIAAANIAAAAAFVVVVVVVVVVVVVV';
+export class AIPlayer {
+  constructor() {
+    this.el = new Audio(); this.el.preload = 'auto';
+    this.queue = []; this.playing = false; this.rate = 1;
+    this.el.onended = () => { this.playing = false; this.onState?.('idle'); this._next(); };
+    this.el.onplaying = () => this.onState?.('speaking');
+    this.el.onerror = () => { const it = this.cur; this.playing = false; if (it && it.url !== SILENT_MP3) this.onFail?.(it.text); this._next(); };
+  }
+  unlock() { this.el.src = SILENT_MP3; this.el.play().catch(() => {}); }
+  play(url, text) {
+    this.queue.push({ url, text });
+    while (this.queue.length > 2) this.queue.shift();   // stay close to live
+    if (!this.playing) this._next();
+  }
+  _next() {
+    const it = this.queue.shift();
+    if (!it) return;
+    this.cur = it; this.playing = true;
+    this.el.src = it.url; this.el.playbackRate = this.rate;
+    this.el.play().catch(() => { this.playing = false; this.onFail?.(it.text); this._next(); });
+  }
+  stop() { this.queue = []; this.playing = false; try { this.el.pause(); } catch {} }
+}
+
 const voiceKey = (v) => (v.voiceURI || v.name) + '|' + v.lang;
 
 export class ReadAloud {
   constructor() {
     this.on = false; this.voice = null;
+    this.ai = null;            // { voice } when the natural AI voice is selected
+    this.player = new AIPlayer();
+    this.player.onState = (st) => this.onState?.(st);
+    this.player.onFail = (text) => this._deviceSay(text);   // network trouble: fall back to the device voice
     try { this.wanted = localStorage.getItem('lt-voice') || ''; this.rate = +localStorage.getItem('lt-rate') || 0.9; } catch { this.wanted = ''; this.rate = 0.9; }
   }
   voices() {
@@ -262,12 +294,24 @@ export class ReadAloud {
     if (v) this.voice = v;
     return v || this.voice;
   }
-  setRate(r) { this.rate = r; try { localStorage.setItem('lt-rate', r); } catch {} }
+  setRate(r) { this.rate = r; this.player.rate = r / 0.9; try { localStorage.setItem('lt-rate', r); } catch {} }
   // Lines are spoken one at a time from our own queue. We never call cancel() right before
   // speak(): in Chrome that cancels the new line, and repeated cancels can freeze the speech engine.
+  useAI(voice) {          // voice id, or null for the device voice
+    this.ai = voice ? { voice } : null;
+    try { localStorage.setItem('lt-ai', voice || 'off'); } catch {}
+  }
+  aiUrl(text) { return '/api/tts?voice=' + encodeURIComponent(this.ai.voice) + '&text=' + encodeURIComponent(text); }
+  // room pages pass the server's ready-made audio for a line
+  playAudio(url, text) { if (this.on && this.ai) this.player.play(url, text); }
   toggle() {
     this.on = !this.on;
     this.queue = [];
+    if (this.ai) {
+      if (this.on) { this.player.unlock(); this.player.rate = this.rate / 0.9; this.player.play(this.aiUrl('English sound is on.'), 'English sound is on.'); }
+      else this.player.stop();
+      return this.on;
+    }
     if (this.on) {
       if (!this.voice) this.pickVoice();
       this.busy = false;
@@ -278,8 +322,14 @@ export class ReadAloud {
   }
   say(text, force = false) {
     if ((!this.on && !force) || !text) return;
+    if (this.ai) {
+      if (force) { this.player.unlock(); this.player.stop(); }
+      this.player.rate = this.rate / 0.9;
+      return this.player.play(this.aiUrl(text), text);
+    }
     this._enqueue(text, force);
   }
+  _deviceSay(text) { if (text && this.on) this._enqueue(text); }
   _enqueue(text, front = false) {
     this.queue = this.queue || [];
     if (front) this.queue = [text]; else this.queue.push(text);
@@ -313,12 +363,15 @@ export class ReadAloud {
 }
 
 // Fills a <select> with English voices, male voices first, grouped by gender.
-export function voicePicker(selectEl, testBtn, rateEl, reader) {
+export function voicePicker(selectEl, testBtn, rateEl, reader, aiOptions = null) {
+  // aiOptions: [{ id, label }] natural voices offered by the server (null = none)
   let lastSig = '';
+  let savedAI = null; try { savedAI = localStorage.getItem('lt-ai'); } catch {}
+  if (aiOptions?.length && savedAI !== 'off') reader.useAI(aiOptions.some(o => o.id === savedAI) ? savedAI : aiOptions[0].id);
   function fill() {
     const vs = reader.voices();
-    if (!vs.length) return;
-    const sig = vs.map(voiceKey).join(',');
+    if (!vs.length && !aiOptions?.length) return;   // natural voices work even with no device voices
+    const sig = vs.map(voiceKey).join(',') + '|' + (aiOptions || []).map(o => o.id).join(',');
     if (sig === lastSig) return;                       // Chrome fires voiceschanged repeatedly
     if (document.activeElement === selectEl) {          // never rebuild while the list is open
       selectEl.addEventListener('blur', fill, { once: true }); return;
@@ -331,6 +384,11 @@ export function voicePicker(selectEl, testBtn, rateEl, reader) {
     const rank = g => g === 'male' ? 0 : g === 'female' ? 1 : 2;
     items.sort((a, b) => rank(a.gender) - rank(b.gender) || (b.natural - a.natural) || a.accent.localeCompare(b.accent) || a.label.localeCompare(b.label));
     selectEl.innerHTML = '';
+    if (aiOptions?.length) {
+      const ag = document.createElement('optgroup'); ag.label = 'Natural voices (recommended)';
+      for (const o of aiOptions) { const op = document.createElement('option'); op.value = 'ai:' + o.id; op.textContent = '\u2605 ' + o.label; ag.append(op); }
+      selectEl.append(ag);
+    }
     let group = null, g = null;
     for (const it of items) {
       const gl = it.gender ? it.gender[0].toUpperCase() + it.gender.slice(1) + ' voices' : 'Other voices';
@@ -339,7 +397,8 @@ export function voicePicker(selectEl, testBtn, rateEl, reader) {
       o.value = it.key; o.textContent = it.label;
       group.append(o);
     }
-    if (reader.voice) selectEl.value = voiceKey(reader.voice);
+    if (reader.ai) selectEl.value = 'ai:' + reader.ai.voice;
+    else if (reader.voice) selectEl.value = voiceKey(reader.voice);
   }
   fill();
   speechSynthesis.addEventListener('voiceschanged', fill);
@@ -349,6 +408,7 @@ export function voicePicker(selectEl, testBtn, rateEl, reader) {
   function edgeHint() {
     const box = document.getElementById('vhint');
     if (!box) return;
+    if (aiOptions?.length) { box.innerHTML = '&#9733; Natural voices sound like a real person and work on every device.'; return; }
     const hasNatural = reader.voices().some(v => voiceInfo(v).natural === 2);
     const mobile = /Android|iPhone|iPad/i.test(navigator.userAgent);
     const isEdge = /Edg\//.test(navigator.userAgent);
@@ -361,7 +421,12 @@ export function voicePicker(selectEl, testBtn, rateEl, reader) {
     if (b) b.onclick = async () => { try { await navigator.clipboard.writeText(location.href); b.textContent = 'Copied - paste it into Edge'; } catch { b.textContent = location.href; } };
   }
   const sample = 'Hello, this is how the English translation will sound.';
-  selectEl.onchange = () => { reader.setVoice(selectEl.value); reader.say(sample, true); };
+  selectEl.onchange = () => {
+    const v = selectEl.value;
+    if (v.startsWith('ai:')) reader.useAI(v.slice(3));
+    else { reader.useAI(null); reader.setVoice(v); }
+    reader.say(sample, true);
+  };
   if (testBtn) testBtn.onclick = () => reader.say(sample, true);
   if (rateEl) { rateEl.value = reader.rate; rateEl.oninput = () => reader.setRate(+rateEl.value); }
 }

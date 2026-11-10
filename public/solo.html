@@ -67,7 +67,7 @@
 import { $, getConfig, browserCheck, prepareTranslation, translateLine, HindiRecognizer, attachMeter, ReadAloud, voicePicker, transcriptText, download } from '/js/common.js';
 
 const voice = new ReadAloud();
-voicePicker($('#voice'), $('#vtest'), $('#rate'), voice);
+getConfig().then(c => voicePicker($('#voice'), $('#vtest'), $('#rate'), voice, c.tts?.ready ? c.tts.voices : null));
 voice.onState = (st, err) => { if (st === 'error') setStatus('Voice problem (' + err + ') - try another voice', 'warn'); };
 const lines = [];
 let rec, stopMeter = () => {}, queue = Promise.resolve(), interimEl = null, pip = null;

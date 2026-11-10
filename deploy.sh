@@ -29,6 +29,10 @@ docker exec "$CADDY" caddy validate --config /etc/caddy/Caddyfile --adapter cadd
 docker exec "$CADDY" caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile
 
 echo "== Health check"
-sleep 2
+sleep 3
 docker exec "$CADDY" wget -qO- http://live-translate:3000/api/config && echo
+echo "== Natural voice speed test (from the voice service log)"
+for i in $(seq 1 30); do docker logs live-translate-tts 2>&1 | grep -q "Self-test" && break; sleep 2; done
+docker logs live-translate-tts 2>&1 | grep "Self-test" || echo "   voice service still starting - check later with: docker logs live-translate-tts"
+free -m | head -2
 echo "Done: https://translate.dhirajmakam.com"

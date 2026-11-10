@@ -13,6 +13,8 @@ const { WebSocketServer } = require('ws');
 const PORT = Number(process.env.PORT || 3000);
 const CLAUDE_KEY = process.env.ANTHROPIC_API_KEY || '';
 const CLAUDE_MODEL = process.env.CLAUDE_MODEL || 'claude-haiku-5-5';
+const TTS_URL = process.env.TTS_URL || '';           // e.g. http://live-translate-tts:8000 (natural AI voice)
+const DEFAULT_VOICE = process.env.TTS_VOICE || 'bm_george';
 
 // Guardrails so a public proof of concept can't run up a bill
 const LIMITS = {
@@ -51,7 +53,7 @@ function saveRooms() {
   saveTimer = setTimeout(() => {
     try {
       fs.mkdirSync(DATA_DIR, { recursive: true });
-      const out = [...rooms.values()].map(({ code, hostToken, title, startsAt, created, expiresAt }) => ({ code, hostToken, title, startsAt, created, expiresAt }));
+      const out = [...rooms.values()].map(({ code, hostToken, title, startsAt, created, expiresAt, voice }) => ({ code, hostToken, title, startsAt, created, expiresAt, voice }));
       fs.writeFileSync(ROOMS_FILE + '.tmp', JSON.stringify(out));
       fs.renameSync(ROOMS_FILE + '.tmp', ROOMS_FILE);
     } catch (e) { console.error('Could not save rooms:', e.message); }
@@ -85,7 +87,7 @@ function sweepRooms() {
 }
 setInterval(sweepRooms, 60e3);
 
-const publicRoom = (r) => ({ code: r.code, title: r.title, startsAt: r.startsAt || null, live: !!r.live, expiresAt: r.expiresAt });
+const publicRoom = (r) => ({ code: r.code, title: r.title, startsAt: r.startsAt || null, live: !!r.live, expiresAt: r.expiresAt, voice: r.voice || DEFAULT_VOICE, naturalVoice: tts.ready });
 
 // ---------- translation ----------
 const ipHits = new Map(); // ip -> [timestamps]
@@ -136,6 +138,53 @@ async function claudeTranslate(hi, context, contextEn) {
   return en;
 }
 
+// ---------- natural voice (Kokoro service) ----------
+const tts = { ready: false, voices: [] };
+async function checkTts() {
+  if (!TTS_URL) return;
+  try {
+    const j = await (await fetch(TTS_URL + '/health', { signal: AbortSignal.timeout(4000) })).json();
+    if (!tts.ready && j.ok) console.log(`Natural voice service: self-test ${j.self_test}x real time - ${j.fast_enough === false ? 'too slow, using device voices' : 'in use'}`);
+    tts.ready = !!j.ok && j.fast_enough !== false; tts.voices = j.voices || []; tts.selfTest = j.self_test;
+  } catch { if (tts.ready) console.error('Natural voice service not reachable'); tts.ready = false; }
+}
+checkTts(); setInterval(checkTts, 30e3);
+
+async function ttsSpeak(text, voice) {
+  const r = await fetch(TTS_URL + '/speak', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text, voice }), signal: AbortSignal.timeout(30000),
+  });
+  if (!r.ok) throw new Error('tts ' + r.status);
+  return Buffer.from(await r.arrayBuffer());
+}
+
+// Each room line is voiced once; listeners fetch the same MP3. One job at a time; if the
+// service falls behind, the oldest waiting lines are skipped (their text still shows).
+const audioStore = new Map();   // id -> Buffer
+const ttsQueue = [];
+let ttsBusy = false;
+function queueRoomAudio(room, line) {
+  if (!tts.ready || !line.en) return;
+  ttsQueue.push({ room, line });
+  while (ttsQueue.length > 3) ttsQueue.shift();
+  runTts();
+}
+async function runTts() {
+  if (ttsBusy) return;
+  const job = ttsQueue.shift();
+  if (!job) return;
+  ttsBusy = true;
+  try {
+    const buf = await ttsSpeak(job.line.en, job.room.voice || DEFAULT_VOICE);
+    audioStore.set(job.line.id, buf);
+    while (audioStore.size > 400) audioStore.delete(audioStore.keys().next().value);
+    toListeners(job.room, { type: 'audio', id: job.line.id, url: '/audio/' + job.line.id + '.mp3' });
+  } catch (e) { console.error('voice:', e.message); }
+  ttsBusy = false;
+  runTts();
+}
+
 // ---------- http ----------
 function clientIp(req) {
   return (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.socket.remoteAddress || '?';
@@ -158,7 +207,7 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://x');
   const p = url.pathname;
 
-  if (p === '/api/config') return json(res, 200, { claude: Boolean(CLAUDE_KEY), roomHours: LIMITS.roomHours, advanceDays: LIMITS.advanceDays });
+  if (p === '/api/config') return json(res, 200, { claude: Boolean(CLAUDE_KEY), roomHours: LIMITS.roomHours, advanceDays: LIMITS.advanceDays, tts: { ready: tts.ready, voices: tts.voices, defaultVoice: DEFAULT_VOICE } });
 
   if (p === '/api/rooms' && req.method === 'POST') {
     sweepRooms();
@@ -180,6 +229,7 @@ const server = http.createServer(async (req, res) => {
     const room = {
       code, hostToken: crypto.randomBytes(16).toString('hex'),
       title: String(body.title || '').slice(0, 80), startsAt, created,
+      voice: /^[a-z]{2}_[a-z]+$/.test(body.voice || '') ? body.voice : DEFAULT_VOICE,
       // open until the event plus a few hours; links without a start time last 2 days unless used
       expiresAt: Math.max(startsAt || created + 2 * 86400e3, created) + LIMITS.roomHours * 3600e3,
       live: false, history: [], interim: null, clients: new Set(),
@@ -193,6 +243,29 @@ const server = http.createServer(async (req, res) => {
     if (!r) return json(res, 404, { error: 'Room not found' });
     const key = url.searchParams.get('key');
     return json(res, 200, { ...publicRoom(r), isHost: key ? key === r.hostToken : undefined });
+  }
+
+  const am = p.match(/^\/audio\/([A-Za-z0-9]+)\.mp3$/);
+  if (am) {
+    const buf = audioStore.get(am[1]);
+    if (!buf) { res.writeHead(404); return res.end(); }
+    res.writeHead(200, { 'Content-Type': 'audio/mpeg', 'Content-Length': buf.length, 'Cache-Control': 'public, max-age=3600' });
+    return res.end(buf);
+  }
+
+  if (p === '/api/tts' && req.method === 'GET') {
+    // on-demand natural voice for solo mode and the "sound is on" check
+    if (!tts.ready) return json(res, 503, { error: 'voice unavailable' });
+    const text = String(url.searchParams.get('text') || '').slice(0, 400).trim();
+    const voice = tts.voices.some(v => v.id === url.searchParams.get('voice')) ? url.searchParams.get('voice') : DEFAULT_VOICE;
+    if (!text) return json(res, 400, { error: 'empty' });
+    const block = allowTranslate(clientIp(req));
+    if (block) return json(res, 429, { error: block });
+    try {
+      const buf = await ttsSpeak(text, voice);
+      res.writeHead(200, { 'Content-Type': 'audio/mpeg', 'Content-Length': buf.length, 'Cache-Control': 'public, max-age=86400' });
+      return res.end(buf);
+    } catch (e) { return json(res, 502, { error: 'voice failed' }); }
   }
 
   if (p === '/api/translate' && req.method === 'POST') {
@@ -264,10 +337,13 @@ wss.on('connection', (ws, req) => {
     } else if (m.type === 'final' && m.hi) {
       room.interim = null;
       setLive(room, true); touch(room);
-      const line = { id: Date.now() + Math.random(), t: Date.now(), hi: String(m.hi).slice(0, LIMITS.maxChars), en: String(m.en || '').slice(0, 2000) };
+      const line = { id: Date.now().toString(36) + crypto.randomBytes(3).toString('hex'), t: Date.now(), hi: String(m.hi).slice(0, LIMITS.maxChars), en: String(m.en || '').slice(0, 2000) };
       room.history.push(line);
       if (room.history.length > LIMITS.historyLines) room.history.shift();
       toListeners(room, { type: 'final', line });
+      queueRoomAudio(room, line);
+    } else if (m.type === 'voice' && /^[a-z]{2}_[a-z]+$/.test(m.voice || '')) {
+      room.voice = m.voice; saveRooms();
     } else if (m.type === 'clear') {
       room.history = []; room.interim = null;
       toListeners(room, { type: 'clear' });

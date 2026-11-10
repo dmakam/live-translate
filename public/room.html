@@ -103,7 +103,13 @@ import { $, ReadAloud, voicePicker, transcriptText, download } from '/js/common.
 
 const code = location.pathname.split('/').pop().toUpperCase();
 const voice = new ReadAloud();
-voicePicker($('#voice'), $('#vtest'), null, voice);
+let pickerReady = false;
+const audioById = new Map(), waitingAudio = new Map();   // natural voice: line id -> mp3 url / render time
+function setupPicker(m) {
+  if (pickerReady) return; pickerReady = true;
+  // The organiser's natural voice is made once on the server for everyone; device voices are the backup.
+  voicePicker($('#voice'), $('#vtest'), null, voice, m.naturalVoice ? [{ id: m.voice, label: 'Natural voice' }] : null);
+}
 const store = { get: (k, d) => { try { const v = localStorage.getItem(k); return v === null ? d : JSON.parse(v); } catch { return d; } },
                 set: (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} } };
 
@@ -202,7 +208,12 @@ function render(line, speak) {
   while (feed.children.length > 200) feed.firstChild.remove();
   d.scrollIntoView({ behavior: 'smooth', block: 'center' });
   shown.push(line);
-  if (speak) voice.say(line.en);
+  if (speak) {
+    if (voice.ai) {
+      const url = audioById.get(line.id);
+      if (url) voice.playAudio(url, line.en); else waitingAudio.set(line.id, { t: Date.now(), text: line.en });
+    } else voice.say(line.en);
+  }
 }
 
 function showInterim(hi) {
@@ -231,6 +242,7 @@ function connect() {
   ws.onmessage = (e) => {
     const m = JSON.parse(e.data);
     if (m.type === 'hello') {
+      setupPicker(m);
       info = { title: m.title, startsAt: m.startsAt, live: m.live };
       if (m.title) { $('#title').textContent = m.title; document.title = m.title + ' \u00b7 English'; }
       $('#feed').innerHTML = ''; shown.length = 0; pending = []; hasLines = false;
@@ -241,6 +253,12 @@ function connect() {
     if (m.type === 'status') liveState(m.live);
     if (m.type === 'final') { if (!info.live) liveState(true); pending.push({ at: Date.now(), line: m.line }); }
     if (m.type === 'interim') showInterim(m.hi);
+    if (m.type === 'audio') {
+      audioById.set(m.id, m.url);
+      while (audioById.size > 100) audioById.delete(audioById.keys().next().value);
+      const w = waitingAudio.get(m.id);
+      if (w) { waitingAudio.delete(m.id); if (Date.now() - w.t < 25000) voice.playAudio(m.url, w.text); }
+    }
     if (m.type === 'clear') { $('#feed').innerHTML = ''; pending = []; hasLines = false; showWaiting(); }
     if (m.type === 'error' || m.type === 'closed') {
       ws.onclose = null; $('#dot').classList.remove('on'); clearInterval(tick);

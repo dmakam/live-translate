@@ -67,6 +67,11 @@
               <span class="hint">Your local time. Listeners see it in their own time.</span>
             </div>
           </div>
+          <div class="field hidden" id="voiceField">
+            <label for="hvoice">English voice listeners will hear</label>
+            <div class="row" style="flex-wrap:nowrap"><select id="hvoice" style="flex:1; min-width:0; font-size:17px; padding:13px"></select><button class="btn ghost" id="hvtest" type="button">&#9654; Listen</button></div>
+            <span class="hint">A natural AI voice, made once on the server and played to everyone.</span>
+          </div>
           <button class="btn big" id="create">Create link</button>
           <span class="status" id="createMsg" style="display:inline-flex; margin-left:12px"></span>
         </div>
@@ -147,7 +152,21 @@ const listenUrl = () => location.origin + '/r/' + room.code;
 const hostUrl = () => location.origin + '/host?room=' + room.code + '&key=' + room.hostToken;
 $('#slugPrefix').textContent = location.host + '/r/';
 
-getConfig().then(c => { $('#engine').textContent = c.claude ? 'Translation: Claude' : 'Translation: Chrome on-device'; });
+let cfg = {};
+const sampleAudio = new Audio();
+getConfig().then(c => {
+  cfg = c;
+  $('#engine').textContent = c.claude ? 'Translation: Claude' : 'Translation: Chrome on-device';
+  if (c.tts?.ready) {
+    $('#voiceField').classList.remove('hidden');
+    $('#hvoice').innerHTML = c.tts.voices.map(v => `<option value="${v.id}">${v.label}</option>`).join('');
+    $('#hvoice').value = c.tts.defaultVoice;
+  }
+});
+$('#hvtest').onclick = () => {
+  sampleAudio.src = '/api/tts?voice=' + encodeURIComponent($('#hvoice').value) + '&text=' + encodeURIComponent('Welcome. This is how the English translation will sound to your listeners.');
+  sampleAudio.play().catch(() => {});
+};
 const problem = browserCheck();
 if (problem) { setStatus(problem, 'bad'); $('#go').disabled = true; }
 
@@ -178,7 +197,7 @@ $('#slug').oninput = () => {
 };
 
 async function createRoom(extra = {}) {
-  const body = { title: $('#title').value.trim(), slug: $('#slug').value.trim(), ...extra };
+  const body = { title: $('#title').value.trim(), slug: $('#slug').value.trim(), voice: $('#hvoice').value || undefined, ...extra };
   if ($('#when').value) body.startsAt = new Date($('#when').value).toISOString();
   const r = await fetch('/api/rooms', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
   const j = await r.json();
@@ -196,7 +215,8 @@ $('#create').onclick = async () => {
 function showRoom() {
   $('#setupForm').classList.add('hidden'); $('#eventInfo').classList.remove('hidden');
   $('#evTitle').textContent = room.title || 'Your event';
-  $('#evWhen').textContent = fmtWhen(room.startsAt);
+  const vName = (cfg.tts?.voices || []).find(v => v.id === room.voice)?.label;
+  $('#evWhen').textContent = fmtWhen(room.startsAt) + (vName && cfg.tts?.ready ? ' \u00b7 Voice: ' + vName.split(' \u00b7 ')[0] : '');
   $('#s1').classList.add('done'); $('#s2').classList.remove('locked'); $('#s3').classList.remove('locked');
   $('#roomCard').classList.remove('hidden'); $('#moreCard').classList.remove('hidden');
   $('#link').textContent = listenUrl();

@@ -19,7 +19,7 @@ The test guide is at `/test`.
 | Hindi speech to text | Chrome Web Speech API (hi-IN), fed the tab's audio track | free |
 | Hindi to English | Claude Haiku via the server if `ANTHROPIC_API_KEY` is set; otherwise Chrome's on-device translator | small, per use |
 | Delivery to listeners | WebSocket rooms on this server | free |
-| English audio | Each listener's phone reads the lines aloud (speechSynthesis) | free |
+| English audio | Natural AI voice (open-source Kokoro, `tts/` service on the VPS): each line is voiced once on the server and played to every listener. Falls back to the device voice. | free |
 
 A line is translated only once Chrome marks it final, which happens at a natural pause. Hindi puts
 the verb last, so this stops subtitles from rearranging mid-sentence. Translations are queued, so
@@ -62,3 +62,9 @@ validates and reloads Caddy. It never edits the shared Caddyfile. The container 
 - Zoom must be joined in the browser, so that it is a tab Chrome can share.
 - Chrome's speech recognition runs on Google's servers, so the host needs to be online.
 - Event links are saved in a Docker volume and survive restarts; the transcript of a live event does not.
+
+## Natural voice (tts/)
+
+`tts/` is a small Python service running the open-source Kokoro model on the CPU (about 630 MB
+of memory). At start-up it times itself; if it cannot create speech faster than real time, the app
+keeps using device voices. Check it with `docker logs live-translate-tts | grep Self-test`.
