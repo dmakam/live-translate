@@ -254,62 +254,49 @@ export class ReadAloud {
     this.voice = this.voices().find(v => voiceKey(v) === key) || this.voice;
   }
   setRate(r) { this.rate = r; try { localStorage.setItem('lt-rate', r); } catch {} }
+  // Lines are spoken one at a time from our own queue. We never call cancel() right before
+  // speak(): in Chrome that cancels the new line, and repeated cancels can freeze the speech engine.
   toggle() {
     this.on = !this.on;
+    this.queue = [];
     if (this.on) {
-      // Phones only allow speech that starts directly inside the tap, so speak a real
-      // sentence synchronously here - this unlocks audio for the rest of the session.
       if (!this.voice) this.pickVoice();
-      speechSynthesis.cancel();
-      const u = new SpeechSynthesisUtterance('English sound is on.');
-      if (this.voice) { u.voice = this.voice; u.lang = this.voice.lang; } else u.lang = 'en-US';
-      u.rate = this.rate;
-      u.onstart = () => this.onState?.('speaking'); u.onend = () => this.onState?.('idle');
-      u.onerror = (e) => { if (e.error !== 'interrupted' && e.error !== 'canceled') this.onState?.('error', e.error); };
-      this._keep = [u];
-      speechSynthesis.speak(u);
-    } else speechSynthesis.cancel();
+      this.busy = false;
+      // Speak inside the tap itself: phones only allow speech that starts from a user tap.
+      this._enqueue('English sound is on.');
+    } else { this.busy = false; speechSynthesis.cancel(); }
     return this.on;
   }
   say(text, force = false) {
     if ((!this.on && !force) || !text) return;
-    if (!this.voice) this.pickVoice();
-    const synth = speechSynthesis;
-    // If we fall far behind, skip the backlog instead of lagging further.
-    const flush = (force && synth.speaking) || synth.pending;
-    if (flush) synth.cancel();
-    const make = (voice) => {
-      const u = new SpeechSynthesisUtterance(text);
-      if (voice) { u.voice = voice; u.lang = voice.lang; } else u.lang = 'en-US';
-      u.rate = this.rate;
-      return u;
-    };
-    const u = make(this.voice);
-    let started = false;
-    u.onstart = () => { started = true; this.onState?.('speaking'); };
-    u.onend = () => this.onState?.('idle');
-    u.onerror = (e) => {
-      if (e.error === 'interrupted' || e.error === 'canceled') return;
-      this.onState?.('error', e.error);
-      // Natural (online) voices can fail on a bad connection: retry once with a local voice.
-      const local = this.voices().find(v => v.localService && /^en/i.test(v.lang));
-      if (local && local !== this.voice) { const b = make(local); this._keep.push(b); synth.speak(b); }
-    };
-    // Chromium can garbage-collect utterances before they play: keep references.
-    this._keep = (this._keep || []).slice(-5); this._keep.push(u);
-    synth.resume();
-    // Speaking in the same tick as cancel() is silently dropped in Chrome/Edge, so wait a moment
-    // after a cancel; otherwise speak at once (keeps a button tap's permission on phones).
-    if (flush) setTimeout(() => synth.speak(u), 80); else synth.speak(u);
-    // Watchdog: if nothing started after 3 s, the engine is stuck - reset and try once more.
-    setTimeout(() => {
-      if (!started && this._keep.includes(u)) {
-        synth.cancel(); synth.resume();
-        const r = make(this.voice); this._keep.push(r);
-        r.onstart = u.onstart; r.onend = u.onend; r.onerror = u.onerror;
-        setTimeout(() => synth.speak(r), 80);
-      }
-    }, 3000);
+    this._enqueue(text, force);
+  }
+  _enqueue(text, front = false) {
+    this.queue = this.queue || [];
+    if (front) this.queue = [text]; else this.queue.push(text);
+    // Running behind? Keep only the newest two lines so the audio stays close to live.
+    while (this.queue.length > 2) this.queue.shift();
+    if (!this.busy) this._next();
+  }
+  _next() {
+    const text = (this.queue || []).shift();
+    if (!text) { this.busy = false; return; }
+    this.busy = true;
+    const u = new SpeechSynthesisUtterance(text);
+    if (this.voice) { u.voice = this.voice; u.lang = this.voice.lang; } else u.lang = 'en-US';
+    u.rate = this.rate;
+    let started = false, done = false;
+    const finish = () => { if (done) return; done = true; this.busy = false; this.onState?.('idle'); setTimeout(() => this._next(), 120); };
+    u.onstart = () => { started = true; this.stuck = false; this.onState?.('speaking'); };
+    u.onend = finish;
+    u.onerror = (e) => { if (e.error !== 'interrupted' && e.error !== 'canceled') this.onState?.('error', e.error); finish(); };
+    this._keep = [u];   // Chromium can garbage-collect an utterance before it plays
+    speechSynthesis.resume();
+    speechSynthesis.speak(u);
+    // If the engine never starts, report it instead of hammering it with cancels.
+    const words = text.split(/\s+/).length;
+    setTimeout(() => { if (!started && !done) { this.stuck = true; this.onState?.('stuck'); } }, 5000);
+    setTimeout(() => { if (!done) finish(); }, 8000 + words * 900);  // safety: never block the queue forever
   }
 }
 

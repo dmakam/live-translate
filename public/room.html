@@ -148,6 +148,7 @@ $('#listen').onclick = () => {
 voice.onState = (st, err) => {
   if (st === 'speaking') { heard = true; $('#soundHelp').classList.add('hidden'); }
   if (st === 'error') { setState('Sound problem - open Settings and pick another voice', 'paused'); $('#soundHelp').classList.remove('hidden'); }
+  if (st === 'stuck') { $('#soundHelpText').innerHTML = '<b>The voice on this device is not responding.</b> Close this browser completely (all windows), open it again and come back to this link.'; $('#soundHelp').classList.remove('hidden'); }
 };
 $('#soundHelpText').innerHTML = isIOS
   ? '<b>No sound?</b> Flip the <b>silent switch</b> on the side of your iPhone (no orange showing) and turn the volume up. Then tap the blue button twice.'
@@ -195,7 +196,8 @@ function render(line, speak) {
   d.className = 'sub latest';
   d.innerHTML = '<div class="hi"></div><div class="en"></div>';
   d.querySelector('.hi').textContent = line.hi;
-  d.querySelector('.en').textContent = line.en || '\u2026';
+  if (!line.en) return;  // nothing to show or say
+  d.querySelector('.en').textContent = line.en;
   feed.appendChild(d);
   while (feed.children.length > 200) feed.firstChild.remove();
   d.scrollIntoView({ behavior: 'smooth', block: 'center' });

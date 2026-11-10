@@ -106,31 +106,34 @@ setInterval(() => { const now = Date.now(); for (const [ip, h] of ipHits) if (!h
 let lastErr = { msg: '', at: 0 };
 
 const SYSTEM_PROMPT =
-  'You translate live spoken Hindi into English subtitles for viewers watching a talk or event. ' +
-  'The Hindi comes from automatic speech recognition, so it may contain recognition errors, missing punctuation, ' +
-  'and English words mixed in (Hinglish). Infer the intended meaning. ' +
-  'IMPORTANT: speech is cut into chunks at fixed lengths, so the LAST line may start or end in the middle of a sentence. ' +
-  'If it continues the previous line, translate it so it reads as a natural continuation of the previous English line ' +
-  '(you may start lowercase or with a connecting word) - do not repeat what the previous English already said and do not invent words. ' +
-  'If the last line ends mid-sentence, end your English where the Hindi ends, without completing the thought. ' +
-  'Output ONLY the English for the LAST line - no quotes, no notes, no Hindi. ' +
-  'Keep names, Sanskrit terms and English words as spoken.';
+  'You are a live subtitle translator. You turn spoken Hindi (from speech recognition, often Hinglish, unpunctuated, ' +
+  'sometimes with recognition errors) into natural English subtitles for viewers of a talk or event.\n' +
+  'Speech is cut into chunks at fixed lengths, so the line may be a fragment that starts or ends mid-sentence. ' +
+  'Translate exactly what the fragment says, so it reads as a natural continuation of the previous English line. ' +
+  'Do not complete the thought, and do not repeat what the previous English already said.\n' +
+  'Keep names, Sanskrit terms and English words as spoken.\n' +
+  'Reply with ONLY <en>the English</en>. Never explain, never comment, never ask questions, never leave it empty: ' +
+  'even for a filler word or a line that repeats an earlier one, give the closest short English (for example <en>and then</en>).';
 
-async function claudeTranslate(hi, context, contextEn) {
+async function callClaude(userText) {
   const r = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'x-api-key': CLAUDE_KEY, 'anthropic-version': '2023-06-01' },
-    body: JSON.stringify({
-      model: CLAUDE_MODEL,
-      max_tokens: 400,
-      system: SYSTEM_PROMPT,
-      messages: [{ role: 'user', content:
-        `Earlier lines (Hindi => your English):\n${context.map((h, i) => `${h} => ${contextEn[i] || ''}`).join('\n') || '(none)'}\n\nLast line (translate this only):\n${hi}` }],
-    }),
+    body: JSON.stringify({ model: CLAUDE_MODEL, max_tokens: 250, system: SYSTEM_PROMPT, messages: [{ role: 'user', content: userText }] }),
   });
   const j = await r.json();
   if (j.error) throw new Error(j.error.message || 'Claude error');
-  return (j.content || []).filter(b => b.type === 'text').map(b => b.text).join('').trim();
+  const text = (j.content || []).filter(b => b.type === 'text').map(b => b.text).join('');
+  const m = text.match(/<en>([\s\S]*?)<\/en>/i);
+  // Only accept the tagged answer; untagged text is the model explaining, which must never reach viewers.
+  return (m ? m[1] : (text.length < 160 && !/translat|hindi|\n/i.test(text) ? text : '')).replace(/^["\s]+|["\s]+$/g, '').trim();
+}
+
+async function claudeTranslate(hi, context, contextEn) {
+  const ctx = context.map((h, i) => `${h} => ${contextEn[i] || ''}`).join('\n');
+  let en = await callClaude(`Earlier lines (Hindi => English already shown):\n${ctx || '(none)'}\n\nTranslate this line:\n${hi}`);
+  if (!en) en = await callClaude(`Translate this line:\n${hi}`);   // retry once without context
+  return en;
 }
 
 // ---------- http ----------
