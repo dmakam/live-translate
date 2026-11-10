@@ -238,7 +238,9 @@ export class ReadAloud {
     const vs = this.voices();
     const saved = vs.find(v => voiceKey(v) === this.wanted) || vs.find(v => v.name === this.wanted.split('|')[0]);
     if (saved) { this.voice = saved; return; }
-    if (this.voice && vs.some(v => voiceKey(v) === voiceKey(this.voice))) return; // keep what is already chosen
+    // keep what is already chosen, but swap in Chrome's current object for it
+    const same = this.voice && vs.find(v => voiceKey(v) === voiceKey(this.voice));
+    if (same) { this.voice = same; return; }
     // Default: Rishi (Indian English, male). On devices without Rishi, prefer another
     // Indian-English male voice, then the most human-sounding male voice.
     // Default order: natural Indian-English male (Edge "Prabhat") > Rishi (Mac) > other Indian male
@@ -252,6 +254,13 @@ export class ReadAloud {
     this.wanted = key;
     try { localStorage.setItem('lt-voice', key); } catch {}
     this.voice = this.voices().find(v => voiceKey(v) === key) || this.voice;
+  }
+  currentVoice() {
+    const vs = speechSynthesis.getVoices();
+    const want = this.voice ? voiceKey(this.voice) : this.wanted;
+    const v = (want && vs.find(x => voiceKey(x) === want)) || (this.wanted && vs.find(x => x.name === this.wanted.split('|')[0]));
+    if (v) this.voice = v;
+    return v || this.voice;
   }
   setRate(r) { this.rate = r; try { localStorage.setItem('lt-rate', r); } catch {} }
   // Lines are spoken one at a time from our own queue. We never call cancel() right before
@@ -283,7 +292,10 @@ export class ReadAloud {
     if (!text) { this.busy = false; return; }
     this.busy = true;
     const u = new SpeechSynthesisUtterance(text);
-    if (this.voice) { u.voice = this.voice; u.lang = this.voice.lang; } else u.lang = 'en-US';
+    // Chrome reloads its voice list after the page opens; a voice object from the old list is
+    // silently ignored (it falls back to the default female voice). Always use the current object.
+    const v = this.currentVoice();
+    if (v) { u.voice = v; u.lang = v.lang; } else u.lang = 'en-US';
     u.rate = this.rate;
     let started = false, done = false;
     const finish = () => { if (done) return; done = true; this.busy = false; this.onState?.('idle'); setTimeout(() => this._next(), 120); };
