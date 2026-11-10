@@ -1,0 +1,18 @@
+services:
+  live-translate:
+    build: .
+    container_name: live-translate
+    restart: unless-stopped
+    env_file: .env
+    mem_limit: 160m
+    networks: [caddy]
+    volumes:
+      - live-translate-data:/app/data   # saved event links survive redeploys
+
+volumes:
+  live-translate-data:
+
+networks:
+  caddy:
+    external: true
+    name: ${CADDY_NETWORK:-signal-desk-app_default}

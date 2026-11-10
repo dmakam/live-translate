@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Translate on my screen &middot; Live Translate</title>
+<link rel="stylesheet" href="/css/app.css">
+<style>
+  .stage { display: grid; grid-template-rows: auto 1fr; gap: 16px; height: calc(100vh - 110px); min-height: 520px; }
+  #feed { padding: 6px 4px 30vh; min-height: 0; }
+  .side { display: grid; gap: 22px; align-content: start; }
+</style>
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="/"><span class="mark">&#2309;</span> Live Translate</a>
+  <span class="pill" id="engine">&hellip;</span>
+</header>
+
+<main class="page grid cols-main">
+  <section class="card stage">
+    <div class="grid" style="gap:12px">
+      <div class="row">
+        <button class="btn big" id="go">&#9679; Share a tab &amp; translate</button>
+        <button class="btn ghost" id="listen">&#128264; Listen</button>
+        <button class="btn ghost" id="float">&#10697; Float captions</button>
+        <div style="flex:1; min-width:180px"><div class="label" style="margin-bottom:6px">Audio level</div><div class="meter" id="meter"></div></div>
+      </div>
+      <div class="status" id="status"><span class="dot" id="dot"></span><span id="statusText">Ready</span></div>
+    </div>
+    <div class="subs" id="feed"><div class="empty">English subtitles will appear here.</div></div>
+  </section>
+
+  <aside class="side">
+    <div class="card">
+      <p class="label">How it works</p>
+      <ol class="steps">
+        <li>Open the Hindi video in another tab of this browser and press play.</li>
+        <li>Come back here and press <b>Share a tab &amp; translate</b>.</li>
+        <li>Pick that tab and keep <b>&ldquo;Also share tab audio&rdquo;</b> on.</li>
+        <li>Press <b>Float captions</b> to keep subtitles on top of the video.</li>
+      </ol>
+    </div>
+    <div class="card grid" style="gap:14px">
+      <p class="label" style="margin:0">Display</p>
+      <input type="range" id="size" min="18" max="52" value="30">
+      <div class="row">
+        <button class="btn small ghost" id="hiBtn">&#2361;&#2367; Show Hindi</button>
+        <button class="btn small ghost" id="dl">&#11015; Transcript</button>
+      </div>
+      <div>
+        <p class="label">Voice</p>
+        <div class="row" style="flex-wrap:nowrap">
+          <select id="voice" style="flex:1; min-width:0"></select>
+          <button class="btn small ghost" id="vtest">&#9654; Test</button>
+        </div>
+        <p class="muted" id="vhint" style="font-size:12px; margin:8px 0 0; line-height:1.45"></p>
+        <p class="label" style="margin:14px 0 6px">Speaking speed</p>
+        <input type="range" id="rate" min="0.8" max="1.4" step="0.05">
+      </div>
+      <label class="muted" style="font-size:14px; display:flex; gap:10px; align-items:flex-start; line-height:1.4"><input type="checkbox" id="mute" style="margin-top:3px"> Mute the Hindi audio (hear only the English read-aloud).</label>
+    </div>
+  </aside>
+</main>
+
+<script type="module">
+import { $, getConfig, browserCheck, prepareTranslation, translateLine, HindiRecognizer, attachMeter, ReadAloud, voicePicker, transcriptText, download } from '/js/common.js';
+
+const voice = new ReadAloud();
+voicePicker($('#voice'), $('#vtest'), $('#rate'), voice);
+voice.onState = (st, err) => { if (st === 'error') setStatus('Voice problem (' + err + ') - try another voice', 'warn'); };
+const lines = [];
+let rec, stopMeter = () => {}, queue = Promise.resolve(), interimEl = null, pip = null;
+const setStatus = (t, kind = '') => { $('#statusText').textContent = t; $('#status').className = 'status ' + kind; };
+
+getConfig().then(c => $('#engine').textContent = c.claude ? 'Translation: Claude' : 'Translation: Chrome on-device');
+const problem = browserCheck();
+if (problem) { setStatus(problem, 'bad'); $('#go').disabled = true; }
+
+function render(l) {
+  const feed = $('#feed');
+  feed.querySelector('.empty')?.remove();
+  interimEl?.remove(); interimEl = null;
+  feed.querySelectorAll('.latest').forEach(x => x.classList.remove('latest'));
+  const d = document.createElement('div');
+  d.className = 'sub latest';
+  d.innerHTML = '<div class="hi"></div><div class="en"></div>';
+  d.querySelector('.hi').textContent = l.hi;
+  d.querySelector('.en').textContent = l.en || '(no translation)';
+  feed.appendChild(d);
+  d.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  if (pip) { const c = pip.document.getElementById('pcap'); if (c) c.textContent = l.en; }
+  voice.say(l.en);
+}
+
+function interim(t) {
+  if (!t) { interimEl?.remove(); interimEl = null; return; }
+  if (!interimEl) { interimEl = document.createElement('div'); interimEl.className = 'interim'; $('#feed').appendChild(interimEl); }
+  interimEl.textContent = '\u2026 ' + t;
+}
+
+function onFinal(hi) {
+  const prev = lines.slice(-3);
+  const context = prev.map(l => l.hi), contextEn = prev.map(l => l.en);
+  queue = queue.then(async () => {
+    const { en } = await translateLine(hi, context, contextEn);
+    const l = { t: Date.now(), hi, en };
+    lines.push(l); render(l);
+  });
+}
+
+$('#go').onclick = async () => {
+  if (rec?.running) { rec.stop(); return; }
+  try {
+    setStatus('Getting ready...');
+    await prepareTranslation(t => setStatus(t));
+    rec = new HindiRecognizer({
+      onInterim: interim, onFinal, onStatus: setStatus,
+      onStop: () => { stopMeter(); $('#go').classList.remove('live'); $('#go').innerHTML = '&#9679; Share a tab &amp; translate'; $('#dot').classList.remove('on'); interim(''); setStatus('Stopped'); },
+    });
+    const stream = await rec.start('tab', { muteLocal: $('#mute').checked });
+    stopMeter = attachMeter(stream, $('#meter'));
+    if ($('#mute').checked) await applyMute();
+    $('#go').classList.add('live'); $('#go').innerHTML = '&#9632; Stop';
+    $('#dot').classList.add('on');
+    setStatus('Listening. The audio level bar should move when someone speaks.', 'ok');
+  } catch (e) {
+    if (e.message === 'NO_AUDIO') setStatus('No audio was shared. Try again and switch on "Also share tab audio".', 'bad');
+    else if (e.name === 'NotAllowedError') setStatus('Sharing was cancelled.', 'warn');
+    else setStatus(e.message, 'bad');
+  }
+};
+
+$('#float').onclick = async () => {
+  if (!('documentPictureInPicture' in window)) { setStatus('Floating captions need Chrome 116 or newer on desktop.', 'warn'); return; }
+  if (pip) { pip.close(); return; }
+  pip = await documentPictureInPicture.requestWindow({ width: 760, height: 170 });
+  const css = pip.document.createElement('style');
+  css.textContent = `html,body{margin:0;height:100%;background:#070b18;color:#fff;font-family:system-ui,Segoe UI,Roboto,sans-serif}
+    body{display:grid;place-items:center;padding:14px 22px;box-sizing:border-box}
+    #pcap{font-size:clamp(18px,4.2vw,34px);font-weight:700;line-height:1.3;text-align:center}`;
+  pip.document.head.append(css);
+  const cap = pip.document.createElement('div'); cap.id = 'pcap';
+  cap.textContent = lines.at(-1)?.en || 'English captions will appear here';
+  pip.document.body.append(cap);
+  $('#float').classList.add('on');
+  pip.addEventListener('pagehide', () => { pip = null; $('#float').classList.remove('on'); });
+};
+
+async function applyMute() {
+  if (!rec?.running) return;
+  const ok = await rec.setLocalMute($('#mute').checked);
+  if ($('#mute').checked && ok === false) setStatus('Chrome would not mute the shared tab. Try right-clicking the YouTube tab > Mute site, and check the audio level bar keeps moving.', 'warn');
+  else if ($('#mute').checked) setStatus('Hindi muted for you - the app still hears it. Turn on Listen for English audio.', 'ok');
+}
+$('#mute').onchange = applyMute;
+
+$('#listen').onclick = () => { const on = voice.toggle(); $('#listen').classList.toggle('on', on); $('#listen').innerHTML = on ? '&#128266; Listening' : '&#128264; Listen'; };
+$('#size').oninput = (e) => document.documentElement.style.setProperty('--fs', e.target.value + 'px');
+$('#hiBtn').onclick = () => { document.body.classList.toggle('show-hi'); $('#hiBtn').classList.toggle('on'); };
+$('#dl').onclick = () => download('transcript.txt', transcriptText(lines));
+</script>
+</body>
+</html>

@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Organise an event &middot; Live Translate</title>
+<link rel="stylesheet" href="/css/app.css">
+<style>
+  body { font-size: 18px; }
+  .steps3 { display: grid; gap: 30px; align-content: start; }
+  .step { display: grid; grid-template-columns: 56px minmax(0, 1fr); gap: 18px; align-items: start; }
+  .num { width: 52px; height: 52px; border-radius: 16px; display: grid; place-items: center; font-size: 24px; font-weight: 800;
+    background: linear-gradient(135deg, var(--acc), var(--acc2)); box-shadow: 0 10px 26px rgba(91, 140, 255, .4); }
+  .step.done .num { background: linear-gradient(135deg, var(--aqua), var(--acc)); }
+  .step.locked { opacity: .45; pointer-events: none; }
+  .step h2 { font-size: 26px; margin: 8px 0 6px; }
+  .step p.help { color: #c9d1ff; margin: 0 0 16px; line-height: 1.5; }
+  .field { display: grid; gap: 6px; margin-bottom: 14px; }
+  .field label { font-weight: 700; font-size: 16px; }
+  .field .hint { font-size: 14px; color: var(--mute); }
+  input[type=text], input[type=datetime-local] { font: inherit; font-size: 18px; color: var(--txt); background: rgba(0,0,0,.25); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; width: 100%; color-scheme: dark; }
+  .slugbox { display: flex; align-items: center; background: rgba(0,0,0,.25); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+  .slugbox span { padding: 0 4px 0 16px; color: var(--mute); white-space: nowrap; font-size: 16px; }
+  .slugbox input { border: 0; background: transparent; padding-left: 2px; text-transform: uppercase; letter-spacing: .06em; font-weight: 700; }
+  #slugMsg.ok { color: var(--aqua); } #slugMsg.bad { color: var(--live); }
+  .two { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; }
+  @media (max-width: 700px) { .two { grid-template-columns: 1fr; } }
+  .event-line { display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: center; font-size: 18px; }
+  .event-line b { font-size: 22px; }
+  .linkbig { font-size: 20px; font-weight: 700; word-break: break-all; color: #cfe0ff; }
+  #log { max-height: 46vh; padding-right: 6px; margin-top: 14px; }
+  #log .sub { --fs: 22px; }
+  .side { display: grid; gap: 22px; align-content: start; }
+  .btn.huge { font-size: 22px; padding: 20px 32px; border-radius: 18px; }
+  .linkish { background: none; border: 0; color: #a9c0ff; text-decoration: underline; font: inherit; font-size: 15px; cursor: pointer; padding: 0; }
+</style>
+</head>
+<body class="show-hi">
+<header class="topbar">
+  <a class="brand" href="/"><span class="mark">&#2309;</span> Live Translate</a>
+  <span class="pill" id="engine">&hellip;</span>
+</header>
+
+<main class="page grid cols-main">
+  <section class="card steps3">
+
+    <!-- STEP 1 -->
+    <div class="step" id="s1">
+      <div class="num">1</div>
+      <div>
+        <h2>Create your event link</h2>
+        <div id="setupForm">
+          <p class="help">You can do this days before the event. People who open the link early will see when it starts.</p>
+          <div class="field">
+            <label for="title">Event name</label>
+            <input type="text" id="title" placeholder="e.g. Sunday Satsang" maxlength="80">
+          </div>
+          <div class="two">
+            <div class="field">
+              <label for="slug">Link name <span class="muted" style="font-weight:400">(optional)</span></label>
+              <div class="slugbox"><span id="slugPrefix">/r/</span><input type="text" id="slug" placeholder="SATSANG" maxlength="24" autocomplete="off"></div>
+              <span class="hint" id="slugMsg">Short and easy to say. Leave empty for a random code.</span>
+            </div>
+            <div class="field">
+              <label for="when">Starts at <span class="muted" style="font-weight:400">(optional)</span></label>
+              <input type="datetime-local" id="when">
+              <span class="hint">Your local time. Listeners see it in their own time.</span>
+            </div>
+          </div>
+          <button class="btn big" id="create">Create link</button>
+          <span class="status" id="createMsg" style="display:inline-flex; margin-left:12px"></span>
+        </div>
+        <div id="eventInfo" class="hidden">
+          <div class="event-line"><b id="evTitle"></b><span class="muted" id="evWhen"></span></div>
+          <button class="linkish" id="newEvent" style="margin-top:8px">Make a different event</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- STEP 2 -->
+    <div class="step locked" id="s2">
+      <div class="num">2</div>
+      <div>
+        <h2>Share the link</h2>
+        <p class="help">Send it on WhatsApp or email, put it in the YouTube description or Zoom chat, or show the QR code on screen.</p>
+        <div class="linkbig" id="link">&hellip;</div>
+        <div class="row" style="margin-top:14px">
+          <button class="btn" id="copyInvite">&#128203; Copy invitation message</button>
+          <button class="btn ghost" id="copy">Copy link only</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- STEP 3 -->
+    <div class="step locked" id="s3">
+      <div class="num">3</div>
+      <div>
+        <h2>Start translating when the event begins</h2>
+        <p class="help" id="tabHint">Open the event in another tab of this browser first (YouTube, or Zoom using <b>&ldquo;Join from your browser&rdquo;</b>). Then press Start, choose that tab, and switch on <b>&ldquo;Also share tab audio&rdquo;</b>.</p>
+        <div class="row">
+          <button class="btn huge" id="go">&#9679; Start translating</button>
+          <div style="flex:1; min-width:200px">
+            <div class="label" style="margin-bottom:8px">Sound level</div>
+            <div class="meter" id="meter" style="height:14px"></div>
+          </div>
+        </div>
+        <div class="status" id="status" style="margin-top:12px; font-size:16px"><span class="dot" id="dot"></span><span id="statusText">Not started</span></div>
+        <div class="row" style="margin-top:10px; gap:18px">
+          <label class="muted" id="muteRow" style="font-size:15px; display:flex; gap:10px; align-items:center"><input type="checkbox" id="mute" style="width:20px;height:20px"> Mute the Hindi on this computer</label>
+          <button class="linkish" id="useMic">Using a microphone instead?</button>
+        </div>
+        <div class="interim" id="interim"></div>
+        <div class="subs" id="log"></div>
+      </div>
+    </div>
+  </section>
+
+  <aside class="side">
+    <div class="card hidden" id="roomCard">
+      <p class="label">Scan to follow in English</p>
+      <img class="qr" id="qr" alt="QR code for the listener link">
+      <div id="code" style="margin-top:14px; font-size:18px; font-weight:800; word-break:break-word; color:#cfe0ff"></div>
+    </div>
+    <div class="card">
+      <p class="label">People following now</p>
+      <div class="big-num" id="count">0</div>
+    </div>
+    <div class="card grid hidden" style="gap:10px" id="moreCard">
+      <p class="label">For the organiser</p>
+      <button class="btn ghost small" id="copyHost">&#128273; Copy my organiser link</button>
+      <p class="muted" style="font-size:13px; margin:0; line-height:1.45">Open it on the event day (on any computer) to start this event. Keep it private.</p>
+      <button class="btn ghost small" id="dl">&#11015; Download transcript</button>
+      <button class="btn ghost small" id="clear">Clear listeners' screens</button>
+      <button class="btn ghost small" id="end" style="color:#ff9fb0">End event</button>
+    </div>
+  </aside>
+</main>
+
+<script type="module">
+import { $, getConfig, browserCheck, prepareTranslation, translateLine, HindiRecognizer, attachMeter, transcriptText, download } from '/js/common.js';
+
+let source = 'tab', room = null, ws, rec, stopMeter = () => {};
+const lines = [];
+let queue = Promise.resolve();
+const setStatus = (t, kind = '') => { $('#statusText').textContent = t; $('#status').className = 'status ' + kind; };
+const listenUrl = () => location.origin + '/r/' + room.code;
+const hostUrl = () => location.origin + '/host?room=' + room.code + '&key=' + room.hostToken;
+$('#slugPrefix').textContent = location.host + '/r/';
+
+getConfig().then(c => { $('#engine').textContent = c.claude ? 'Translation: Claude' : 'Translation: Chrome on-device'; });
+const problem = browserCheck();
+if (problem) { setStatus(problem, 'bad'); $('#go').disabled = true; }
+
+function fmtWhen(ms) {
+  if (!ms) return 'No start time set';
+  return 'Starts ' + new Date(ms).toLocaleString([], { weekday: 'long', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+}
+
+// ---------- remember rooms this browser created ----------
+const saved = () => { try { return JSON.parse(localStorage.getItem('lt-host-rooms') || '{}'); } catch { return {}; } };
+function remember(r) { const all = saved(); all[r.code] = { hostToken: r.hostToken, title: r.title }; try { localStorage.setItem('lt-host-rooms', JSON.stringify(all)); localStorage.setItem('lt-host-last', r.code); } catch {} }
+function forget(code) { const all = saved(); delete all[code]; try { localStorage.setItem('lt-host-rooms', JSON.stringify(all)); localStorage.removeItem('lt-host-last'); } catch {} }
+
+// ---------- link name availability ----------
+let slugTimer;
+$('#slug').oninput = () => {
+  const v = $('#slug').value.toUpperCase().replace(/[^A-Z0-9-]/g, '');
+  $('#slug').value = v;
+  clearTimeout(slugTimer);
+  const m = $('#slugMsg');
+  if (!v) { m.className = 'hint'; m.textContent = 'Short and easy to say. Leave empty for a random code.'; return; }
+  if (v.length < 3) { m.className = 'hint bad'; m.textContent = 'At least 3 letters.'; return; }
+  slugTimer = setTimeout(async () => {
+    const r = await fetch('/api/rooms/' + v);
+    m.className = 'hint ' + (r.status === 404 ? 'ok' : 'bad');
+    m.textContent = r.status === 404 ? '\u2713 Available: ' + location.host + '/r/' + v : 'Already taken - try another name.';
+  }, 350);
+};
+
+async function createRoom(extra = {}) {
+  const body = { title: $('#title').value.trim(), slug: $('#slug').value.trim(), ...extra };
+  if ($('#when').value) body.startsAt = new Date($('#when').value).toISOString();
+  const r = await fetch('/api/rooms', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const j = await r.json();
+  if (!r.ok) throw new Error(j.error || 'Could not create the link');
+  room = j; remember(room);
+  history.replaceState(null, '', '/host?room=' + room.code + '&key=' + room.hostToken);
+  showRoom(); connect();
+}
+
+$('#create').onclick = async () => {
+  $('#createMsg').textContent = '';
+  try { await createRoom(); } catch (e) { $('#createMsg').className = 'status bad'; $('#createMsg').textContent = e.message; }
+};
+
+function showRoom() {
+  $('#setupForm').classList.add('hidden'); $('#eventInfo').classList.remove('hidden');
+  $('#evTitle').textContent = room.title || 'Your event';
+  $('#evWhen').textContent = fmtWhen(room.startsAt);
+  $('#s1').classList.add('done'); $('#s2').classList.remove('locked'); $('#s3').classList.remove('locked');
+  $('#roomCard').classList.remove('hidden'); $('#moreCard').classList.remove('hidden');
+  $('#link').textContent = listenUrl();
+  $('#code').textContent = location.host + '/r/' + room.code;
+  $('#qr').src = 'https://api.qrserver.com/v1/create-qr-code/?size=480x480&margin=0&data=' + encodeURIComponent(listenUrl());
+}
+
+async function copy(btn, text, label) {
+  try { await navigator.clipboard.writeText(text); btn.textContent = '\u2713 Copied'; } catch { prompt('Copy this:', text); }
+  setTimeout(() => btn.innerHTML = label, 1800);
+}
+$('#copy').onclick = () => copy($('#copy'), listenUrl(), 'Copy link only');
+$('#copyInvite').onclick = () => {
+  const when = room.startsAt ? '\n' + fmtWhen(room.startsAt) + ' (your local time).' : '';
+  const msg = `${room.title || 'Our event'} - follow it in English, live.${when}\n\nOpen this link on your phone or computer:\n${listenUrl()}\n\nThen tap "Tap to hear English". Keep the page open during the event.`;
+  copy($('#copyInvite'), msg, '&#128203; Copy invitation message');
+};
+$('#copyHost').onclick = () => copy($('#copyHost'), hostUrl(), '&#128273; Copy my organiser link');
+$('#newEvent').onclick = () => {
+  if (rec?.running && !confirm('Stop translating and make a different event?')) return;
+  rec?.stop(); try { ws.onclose = null; ws.close(); } catch {}
+  room = null; history.replaceState(null, '', '/host'); try { localStorage.removeItem('lt-host-last'); } catch {}
+  $('#setupForm').classList.remove('hidden'); $('#eventInfo').classList.add('hidden');
+  ['#s2', '#s3'].forEach(s => $(s).classList.add('locked')); $('#s1').classList.remove('done');
+  $('#roomCard').classList.add('hidden'); $('#moreCard').classList.add('hidden');
+};
+
+// ---------- connection ----------
+function connect() {
+  try { ws?.close(); } catch {}
+  ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws?room=${room.code}&host=${room.hostToken}`);
+  ws.onopen = () => { if (rec?.running) sendWs({ type: 'status', live: true }); };
+  ws.onmessage = (e) => {
+    const m = JSON.parse(e.data);
+    if (m.type === 'stats') $('#count').textContent = m.listeners;
+    if (m.type === 'hello' && !m.isHost) setStatus('This organiser link is not valid any more.', 'bad');
+    if (m.type === 'error' || m.type === 'closed') { setStatus('This event has ended or expired. Make a new one.', 'bad'); forget(room?.code); }
+  };
+  ws.onclose = () => { if (room) setTimeout(() => { if (room) connect(); }, 1500); };
+}
+const sendWs = (o) => { if (ws?.readyState === 1) ws.send(JSON.stringify(o)); };
+
+function addLine(l) {
+  const log = $('#log');
+  log.querySelectorAll('.latest').forEach(x => x.classList.remove('latest'));
+  const d = document.createElement('div');
+  d.className = 'sub latest';
+  d.innerHTML = '<div class="hi"></div><div class="en"></div>';
+  d.querySelector('.hi').textContent = l.hi;
+  d.querySelector('.en').textContent = l.en || '(no translation)';
+  log.prepend(d);
+}
+
+function onFinal(hi) {
+  const prev = lines.slice(-3);
+  const context = prev.map(l => l.hi), contextEn = prev.map(l => l.en);
+  queue = queue.then(async () => {   // keep lines in spoken order
+    const { en } = await translateLine(hi, context, contextEn);
+    const l = { t: Date.now(), hi, en };
+    lines.push(l); addLine(l);
+    sendWs({ type: 'final', hi, en });
+  });
+}
+
+$('#useMic').onclick = () => {
+  if (rec?.running) return;
+  source = source === 'tab' ? 'mic' : 'tab';
+  $('#useMic').textContent = source === 'mic' ? 'Using a stream tab instead?' : 'Using a microphone instead?';
+  $('#tabHint').innerHTML = source === 'mic' ? 'The microphone of this computer will be used. Place it close to the speaker or connect it to the sound desk.' :
+    'Open the event in another tab of this browser first (YouTube, or Zoom using <b>&ldquo;Join from your browser&rdquo;</b>). Then press Start, choose that tab, and switch on <b>&ldquo;Also share tab audio&rdquo;</b>.';
+  $('#muteRow').classList.toggle('hidden', source !== 'tab');
+};
+
+$('#go').onclick = async () => {
+  if (rec?.running) { rec.stop(); return; }
+  try {
+    setStatus('Getting ready...');
+    await prepareTranslation(t => setStatus(t));
+    if (!room) await createRoom();
+    rec = new HindiRecognizer({
+      onInterim: (t) => { $('#interim').textContent = t ? '\u2026 ' + t : ''; if (t) sendWs({ type: 'interim', hi: t }); },
+      onFinal,
+      onStatus: setStatus,
+      onStop: () => {
+        stopMeter(); sendWs({ type: 'status', live: false });
+        $('#go').classList.remove('live'); $('#go').innerHTML = '&#9679; Start translating';
+        $('#dot').classList.remove('on'); $('#interim').textContent = '';
+        setStatus('Paused. Listeners see "paused". Press Start to continue.');
+      },
+    });
+    const stream = await rec.start(source);
+    stopMeter = attachMeter(stream, $('#meter'));
+    if ($('#mute').checked) await applyMute();
+    sendWs({ type: 'status', live: true });
+    $('#go').classList.add('live'); $('#go').innerHTML = '&#9632; Pause';
+    $('#dot').classList.add('on');
+    setStatus(source === 'tab' ? 'Live. The sound level bar should move when someone speaks.' : 'Live from the microphone.', 'ok');
+  } catch (e) {
+    if (e.message === 'NO_AUDIO') setStatus('No sound was shared. Press Start again, choose the tab, and switch on "Also share tab audio".', 'bad');
+    else if (e.name === 'NotAllowedError') setStatus('Sharing was cancelled. Press Start to try again.', 'warn');
+    else setStatus(e.message, 'bad');
+  }
+};
+
+async function applyMute() {
+  if (!rec?.running || source !== 'tab') return;
+  const ok = await rec.setLocalMute($('#mute').checked);
+  if ($('#mute').checked && ok === false) setStatus('This browser would not mute the tab. Right-click that tab and choose "Mute site".', 'warn');
+}
+$('#mute').onchange = applyMute;
+
+$('#dl').onclick = () => download(`transcript-${room?.code || 'event'}.txt`, transcriptText(lines, room?.title));
+$('#clear').onclick = () => sendWs({ type: 'clear' });
+$('#end').onclick = () => {
+  if (!confirm('End this event? The link will stop working for everyone.')) return;
+  rec?.stop(); sendWs({ type: 'end' }); forget(room.code);
+  room = null; history.replaceState(null, '', '/host'); location.reload();
+};
+
+// ---------- reopen an existing event (organiser link or this browser's last event) ----------
+(async () => {
+  const q = new URLSearchParams(location.search);
+  let code = (q.get('room') || '').toUpperCase(), key = q.get('key');
+  if (!code) { code = localStorage.getItem('lt-host-last') || ''; key = saved()[code]?.hostToken; }
+  if (!code || !key) return;
+  const r = await fetch('/api/rooms/' + code + '?key=' + encodeURIComponent(key));
+  if (!r.ok) { forget(code); return; }
+  const j = await r.json();
+  if (!j.isHost) return;
+  room = { ...j, hostToken: key }; remember(room);
+  showRoom(); connect();
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,4 @@
+translate.dhirajmakam.com {
+	encode gzip
+	reverse_proxy live-translate:3000
+}

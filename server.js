@@ -1,0 +1,294 @@
+// Live Hindi -> English translation (proof of concept)
+// - Host mode: one host captures a stream's audio, many listeners follow a room link
+// - Solo mode: one person translates a stream on their own screen
+// Speech-to-text runs in the host's Chrome (Web Speech API, free).
+// Translation: Claude (if ANTHROPIC_API_KEY is set), otherwise Chrome's on-device translator.
+
+const http = require('http');
+const fs = require('fs');
+const path = require('path');
+const crypto = require('crypto');
+const { WebSocketServer } = require('ws');
+
+const PORT = Number(process.env.PORT || 3000);
+const CLAUDE_KEY = process.env.ANTHROPIC_API_KEY || '';
+const CLAUDE_MODEL = process.env.CLAUDE_MODEL || 'claude-haiku-5-5';
+
+// Guardrails so a public proof of concept can't run up a bill
+const LIMITS = {
+  maxRooms: Number(process.env.MAX_ROOMS || 100),
+  roomHours: Number(process.env.ROOM_HOURS || 4),        // a live room closes this long after its last activity
+  advanceDays: Number(process.env.ADVANCE_DAYS || 14),   // links can be created this far ahead of the event
+  perIpPerMin: Number(process.env.TRANSLATE_PER_MIN || 40),
+  dailyTranslations: Number(process.env.DAILY_TRANSLATIONS || 5000),
+  maxChars: 600,
+  historyLines: 300,
+};
+
+const PUBLIC = path.join(__dirname, 'public');
+const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml' };
+const ROUTES = { '/': 'index.html', '/host': 'host.html', '/solo': 'solo.html', '/test': 'test.html' };
+
+// ---------- rooms ----------
+// room: { code, hostToken, title, startsAt, created, expiresAt, live, history, interim, clients:Set }
+const rooms = new Map();
+const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
+const ROOMS_FILE = path.join(DATA_DIR, 'rooms.json');
+const RESERVED = new Set(['HOST', 'SOLO', 'TEST', 'API', 'WS', 'JOIN', 'ADMIN', 'NEW']);
+
+function newCode() {
+  const A = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let c;
+  do { c = Array.from(crypto.randomBytes(5), b => A[b % A.length]).join(''); } while (rooms.has(c));
+  return c;
+}
+const normCode = (c) => String(c || '').trim().toUpperCase().replace(/[^A-Z0-9-]/g, '');
+
+// Rooms are saved so links created days ahead survive a restart (history is not saved).
+let saveTimer = null;
+function saveRooms() {
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => {
+    try {
+      fs.mkdirSync(DATA_DIR, { recursive: true });
+      const out = [...rooms.values()].map(({ code, hostToken, title, startsAt, created, expiresAt }) => ({ code, hostToken, title, startsAt, created, expiresAt }));
+      fs.writeFileSync(ROOMS_FILE + '.tmp', JSON.stringify(out));
+      fs.renameSync(ROOMS_FILE + '.tmp', ROOMS_FILE);
+    } catch (e) { console.error('Could not save rooms:', e.message); }
+  }, 500);
+}
+function loadRooms() {
+  try {
+    for (const r of JSON.parse(fs.readFileSync(ROOMS_FILE, 'utf8'))) {
+      if (r.expiresAt > Date.now()) rooms.set(r.code, { ...r, live: false, history: [], interim: null, clients: new Set() });
+    }
+    if (rooms.size) console.log(`Restored ${rooms.size} room(s)`);
+  } catch {}
+}
+loadRooms();
+
+function touch(room) {
+  // a room in use stays open for ROOM_HOURS after its latest activity
+  room.expiresAt = Math.max(room.expiresAt, Date.now() + LIMITS.roomHours * 3600e3);
+}
+
+function sweepRooms() {
+  const now = Date.now();
+  let changed = false;
+  for (const [code, r] of rooms) {
+    if (now > r.expiresAt) {
+      for (const c of r.clients) { try { c.send(JSON.stringify({ type: 'closed' })); c.close(); } catch {} }
+      rooms.delete(code); changed = true;
+    }
+  }
+  if (changed) saveRooms();
+}
+setInterval(sweepRooms, 60e3);
+
+const publicRoom = (r) => ({ code: r.code, title: r.title, startsAt: r.startsAt || null, live: !!r.live, expiresAt: r.expiresAt });
+
+// ---------- translation ----------
+const ipHits = new Map(); // ip -> [timestamps]
+let day = new Date().toDateString(), dayCount = 0;
+
+function allowTranslate(ip) {
+  const today = new Date().toDateString();
+  if (today !== day) { day = today; dayCount = 0; }
+  if (dayCount >= LIMITS.dailyTranslations) return 'daily';
+  const now = Date.now();
+  const hits = (ipHits.get(ip) || []).filter(t => now - t < 60e3);
+  if (hits.length >= LIMITS.perIpPerMin) return 'rate';
+  hits.push(now); ipHits.set(ip, hits); dayCount++;
+  return null;
+}
+setInterval(() => { const now = Date.now(); for (const [ip, h] of ipHits) if (!h.some(t => now - t < 60e3)) ipHits.delete(ip); }, 120e3);
+
+let lastErr = { msg: '', at: 0 };
+
+const SYSTEM_PROMPT =
+  'You translate live spoken Hindi into English subtitles for viewers watching a talk or event. ' +
+  'The Hindi comes from automatic speech recognition, so it may contain recognition errors, missing punctuation, ' +
+  'and English words mixed in (Hinglish). Infer the intended meaning. ' +
+  'IMPORTANT: speech is cut into chunks at fixed lengths, so the LAST line may start or end in the middle of a sentence. ' +
+  'If it continues the previous line, translate it so it reads as a natural continuation of the previous English line ' +
+  '(you may start lowercase or with a connecting word) - do not repeat what the previous English already said and do not invent words. ' +
+  'If the last line ends mid-sentence, end your English where the Hindi ends, without completing the thought. ' +
+  'Output ONLY the English for the LAST line - no quotes, no notes, no Hindi. ' +
+  'Keep names, Sanskrit terms and English words as spoken.';
+
+async function claudeTranslate(hi, context, contextEn) {
+  const r = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-api-key': CLAUDE_KEY, 'anthropic-version': '2023-06-01' },
+    body: JSON.stringify({
+      model: CLAUDE_MODEL,
+      max_tokens: 400,
+      system: SYSTEM_PROMPT,
+      messages: [{ role: 'user', content:
+        `Earlier lines (Hindi => your English):\n${context.map((h, i) => `${h} => ${contextEn[i] || ''}`).join('\n') || '(none)'}\n\nLast line (translate this only):\n${hi}` }],
+    }),
+  });
+  const j = await r.json();
+  if (j.error) throw new Error(j.error.message || 'Claude error');
+  return (j.content || []).filter(b => b.type === 'text').map(b => b.text).join('').trim();
+}
+
+// ---------- http ----------
+function clientIp(req) {
+  return (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.socket.remoteAddress || '?';
+}
+
+function json(res, code, obj) {
+  res.writeHead(code, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+  res.end(JSON.stringify(obj));
+}
+
+function readBody(req) {
+  return new Promise((resolve) => {
+    let b = '';
+    req.on('data', d => { b += d; if (b.length > 20000) req.destroy(); });
+    req.on('end', () => { try { resolve(JSON.parse(b || '{}')); } catch { resolve({}); } });
+  });
+}
+
+const server = http.createServer(async (req, res) => {
+  const url = new URL(req.url, 'http://x');
+  const p = url.pathname;
+
+  if (p === '/api/config') return json(res, 200, { claude: Boolean(CLAUDE_KEY), roomHours: LIMITS.roomHours, advanceDays: LIMITS.advanceDays });
+
+  if (p === '/api/rooms' && req.method === 'POST') {
+    sweepRooms();
+    if (rooms.size >= LIMITS.maxRooms) return json(res, 429, { error: 'Too many rooms right now. Try again later.' });
+    const body = await readBody(req);
+    let code = newCode();
+    if (body.slug) {
+      code = normCode(body.slug);
+      if (!/^[A-Z0-9][A-Z0-9-]{2,23}$/.test(code)) return json(res, 400, { error: 'Link names need 3-24 letters, numbers or dashes.' });
+      if (RESERVED.has(code)) return json(res, 400, { error: 'That name is reserved. Try another.' });
+      if (rooms.has(code)) return json(res, 409, { error: 'That link name is already taken. Try another.' });
+    }
+    let startsAt = null;
+    if (body.startsAt) {
+      startsAt = Date.parse(body.startsAt);
+      if (!startsAt || startsAt > Date.now() + LIMITS.advanceDays * 86400e3) return json(res, 400, { error: `The start time must be within ${LIMITS.advanceDays} days.` });
+    }
+    const created = Date.now();
+    const room = {
+      code, hostToken: crypto.randomBytes(16).toString('hex'),
+      title: String(body.title || '').slice(0, 80), startsAt, created,
+      // open until the event plus a few hours; links without a start time last 2 days unless used
+      expiresAt: Math.max(startsAt || created + 2 * 86400e3, created) + LIMITS.roomHours * 3600e3,
+      live: false, history: [], interim: null, clients: new Set(),
+    };
+    rooms.set(code, room); saveRooms();
+    return json(res, 200, { ...publicRoom(room), hostToken: room.hostToken });
+  }
+
+  if (p.startsWith('/api/rooms/') && req.method === 'GET') {
+    const r = rooms.get(normCode(p.split('/')[3]));
+    if (!r) return json(res, 404, { error: 'Room not found' });
+    const key = url.searchParams.get('key');
+    return json(res, 200, { ...publicRoom(r), isHost: key ? key === r.hostToken : undefined });
+  }
+
+  if (p === '/api/translate' && req.method === 'POST') {
+    if (!CLAUDE_KEY) return json(res, 501, { error: 'no-claude' });
+    const body = await readBody(req);
+    const hi = String(body.hi || '').slice(0, LIMITS.maxChars).trim();
+    if (!hi) return json(res, 400, { error: 'empty' });
+    const block = allowTranslate(clientIp(req));
+    if (block) return json(res, 429, { error: block });
+    const context = (Array.isArray(body.context) ? body.context : []).slice(-3).map(s => String(s).slice(0, LIMITS.maxChars));
+    const contextEn = (Array.isArray(body.contextEn) ? body.contextEn : []).slice(-3).map(s => String(s).slice(0, 2000));
+    try { return json(res, 200, { en: await claudeTranslate(hi, context, contextEn), engine: 'claude' }); }
+    catch (e) {
+      // Log each distinct error once a minute instead of flooding the terminal
+      const now = Date.now();
+      if (e.message !== lastErr.msg || now - lastErr.at > 60e3) { console.error('Claude translation failed (falling back to Chrome translator):', e.message); lastErr = { msg: e.message, at: now }; }
+      return json(res, 502, { error: 'upstream' });
+    }
+  }
+
+  // static files
+  let file = ROUTES[p];
+  if (!file && /^\/r\/[A-Za-z0-9-]{3,24}$/.test(p)) file = 'room.html';
+  if (!file) file = p.slice(1);
+  const full = path.join(PUBLIC, path.normalize(file));
+  if (!full.startsWith(PUBLIC)) { res.writeHead(403); return res.end(); }
+  fs.readFile(full, (err, data) => {
+    if (err) { res.writeHead(404, { 'Content-Type': 'text/plain' }); return res.end('Not found'); }
+    res.writeHead(200, { 'Content-Type': MIME[path.extname(full)] || 'application/octet-stream', 'Cache-Control': 'no-cache' });
+    res.end(data);
+  });
+});
+
+// ---------- websocket ----------
+const wss = new WebSocketServer({ server, path: '/ws', maxPayload: 16 * 1024 });
+
+function send(ws, obj) { if (ws.readyState === 1) ws.send(JSON.stringify(obj)); }
+function toListeners(room, obj) { const s = JSON.stringify(obj); for (const c of room.clients) if (!c.isHost && c.readyState === 1) c.send(s); }
+function stats(room) {
+  const n = [...room.clients].filter(c => !c.isHost).length;
+  for (const c of room.clients) if (c.isHost) send(c, { type: 'stats', listeners: n });
+}
+function setLive(room, live) {
+  if (room.live === live) return;
+  room.live = live;
+  toListeners(room, { type: 'status', live });
+}
+
+wss.on('connection', (ws, req) => {
+  const q = new URL(req.url, 'http://x').searchParams;
+  const room = rooms.get(normCode(q.get('room')));
+  if (!room) { send(ws, { type: 'error', error: 'Room not found or it has ended.' }); return ws.close(); }
+  ws.isHost = q.get('host') === room.hostToken;
+  room.clients.add(ws);
+
+  send(ws, { type: 'hello', ...publicRoom(room), history: room.history, interim: room.interim, isHost: ws.isHost });
+  stats(room);
+
+  ws.on('message', (raw) => {
+    if (!ws.isHost) return;
+    let m; try { m = JSON.parse(raw); } catch { return; }
+    if (m.type === 'status') {
+      clearTimeout(room.offTimer);
+      setLive(room, !!m.live); touch(room); saveRooms();
+    } else if (m.type === 'interim') {
+      room.interim = String(m.hi || '').slice(0, LIMITS.maxChars);
+      setLive(room, true);
+      toListeners(room, { type: 'interim', hi: room.interim });
+    } else if (m.type === 'final' && m.hi) {
+      room.interim = null;
+      setLive(room, true); touch(room);
+      const line = { id: Date.now() + Math.random(), t: Date.now(), hi: String(m.hi).slice(0, LIMITS.maxChars), en: String(m.en || '').slice(0, 2000) };
+      room.history.push(line);
+      if (room.history.length > LIMITS.historyLines) room.history.shift();
+      toListeners(room, { type: 'final', line });
+    } else if (m.type === 'clear') {
+      room.history = []; room.interim = null;
+      toListeners(room, { type: 'clear' });
+    } else if (m.type === 'end') {
+      toListeners(room, { type: 'closed' });
+      for (const c of room.clients) try { c.close(); } catch {}
+      rooms.delete(room.code); saveRooms();
+    }
+  });
+
+  ws.on('close', () => {
+    room.clients.delete(ws); stats(room);
+    // host's connection dropped: tell listeners it's paused if it doesn't come back soon
+    if (ws.isHost && ![...room.clients].some(c => c.isHost)) {
+      clearTimeout(room.offTimer);
+      room.offTimer = setTimeout(() => setLive(room, false), 20e3);
+    }
+  });
+});
+
+// keep connections alive behind proxies
+setInterval(() => { for (const c of wss.clients) { try { c.ping(); } catch {} } }, 25e3);
+
+server.listen(PORT, () => {
+  console.log(`Live Translate on http://localhost:${PORT}`);
+  console.log(`Translation engine: ${CLAUDE_KEY ? 'Claude (' + CLAUDE_MODEL + ')' : 'Chrome on-device translator (no ANTHROPIC_API_KEY)'}`);
+});

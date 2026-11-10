@@ -1,0 +1,11 @@
+{
+  "name": "live-translate",
+  "version": "1.0.0",
+  "description": "Live Hindi to English translation",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "ws": "^8.22.2"
+  }
+}

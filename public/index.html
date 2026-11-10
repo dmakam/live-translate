@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Live Translate &middot; Hindi to English, live</title>
+<link rel="stylesheet" href="/css/app.css">
+<style>
+  .hero { display: grid; grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr); gap: 40px; align-items: center; padding: 4vh 0 30px; }
+  @media (max-width: 1000px) { .hero { grid-template-columns: 1fr; } }
+  .lead { font-size: 20px; color: #c9d1ff; max-width: 560px; line-height: 1.5; margin: 0 0 28px; }
+  .demo { position: relative; aspect-ratio: 16 / 10; border-radius: 24px; overflow: hidden; border: 1px solid var(--line);
+    background: linear-gradient(160deg, #1a2250, #0b1028); box-shadow: 0 40px 120px rgba(0, 0, 0, .6), 0 0 0 1px rgba(255, 255, 255, .03) inset; }
+  .demo .speaker { position: absolute; inset: 0; display: grid; place-items: center; }
+  .demo .speaker .head { width: 26%; aspect-ratio: 1; border-radius: 50%; background: linear-gradient(160deg, #3a4790, #232c66); box-shadow: 0 0 0 10px rgba(91, 140, 255, .08); }
+  .demo .speaker .wave { position: absolute; width: 26%; aspect-ratio: 1; border-radius: 50%; border: 2px solid rgba(52, 212, 230, .5); animation: ring 2.4s infinite; }
+  .demo .speaker .wave.w2 { animation-delay: 1.2s; }
+  @keyframes ring { from { transform: scale(1); opacity: .8; } to { transform: scale(2.2); opacity: 0; } }
+  .demo .badge { position: absolute; top: 16px; left: 16px; } .demo .badge2 { position: absolute; top: 16px; right: 16px; }
+  .demo .cap { position: absolute; left: 6%; right: 6%; bottom: 7%; text-align: center; }
+  .demo .cap .hi { color: #aab3e0; font-size: clamp(13px, 1.2vw, 17px); margin-bottom: 6px; min-height: 1.3em; }
+  .demo .cap .en { display: inline-block; font-size: clamp(18px, 1.9vw, 28px); font-weight: 700; padding: 8px 16px; border-radius: 12px;
+    background: rgba(0, 0, 0, .55); backdrop-filter: blur(6px); min-height: 1.4em; transition: opacity .3s; }
+  .modes { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 22px; }
+  @media (max-width: 1000px) { .modes { grid-template-columns: 1fr; } }
+  .mode { display: flex; flex-direction: column; gap: 12px; transition: transform .2s, border-color .2s; }
+  .mode:hover { transform: translateY(-4px); border-color: rgba(130, 150, 255, .4); }
+  .mode .ico { width: 48px; height: 48px; border-radius: 14px; display: grid; place-items: center; font-size: 24px; background: rgba(91, 140, 255, .16); }
+  .mode p { color: #c9d1ff; line-height: 1.5; margin: 0; flex: 1; }
+  .join { display: flex; gap: 10px; }
+  .join input { text-transform: uppercase; letter-spacing: .15em; font-weight: 700; }
+</style>
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="/"><span class="mark">&#2309;</span> Live Translate</a>
+  <a class="btn ghost small" href="/test">How to test</a>
+</header>
+
+<main class="page">
+  <section class="hero">
+    <div>
+      <span class="pill">&#9679; Hindi &rarr; English &middot; real time</span>
+      <h1 style="margin-top:18px">Hindi talks.<br><span class="grad">English subtitles. Live.</span></h1>
+      <p class="lead">Play any Hindi stream &mdash; YouTube, Zoom, a live event &mdash; and everyone follows along in English, on any phone, anywhere.</p>
+      <div class="row">
+        <a class="btn big" href="/host">Organise an event</a>
+        <a class="btn big ghost" href="/solo">Translate on my screen</a>
+      </div>
+    </div>
+    <div class="demo" aria-hidden="true">
+      <div class="speaker"><div class="wave"></div><div class="wave w2"></div><div class="head"></div></div>
+      <span class="pill badge">&#9679; LIVE</span>
+      <span class="pill badge2">EN</span>
+      <div class="cap"><div class="hi" id="dHi"></div><div class="en" id="dEn"></div></div>
+    </div>
+  </section>
+
+  <section class="modes">
+    <div class="card mode">
+      <div class="ico">&#128279;</div>
+      <h2>Join an event</h2>
+      <p>Got a link or a code from the organiser? Type the code here to follow the event in English.</p>
+      <form class="join" onsubmit="event.preventDefault(); const c=this.c.value.trim().toUpperCase(); if(c.length>=3) location.href='/r/'+c.replace(/[^A-Z0-9-]/g,'');">
+        <input type="text" name="c" maxlength="24" placeholder="SATSANG" autocomplete="off">
+        <button class="btn">Join</button>
+      </form>
+    </div>
+    <div class="card mode">
+      <div class="ico">&#127908;</div>
+      <h2>Organise an event</h2>
+      <p>Capture the stream's audio on one laptop. Share a link or QR code &mdash; your audience reads or listens in English on their phones.</p>
+      <a class="btn" href="/host">Create an event link</a>
+    </div>
+    <div class="card mode">
+      <div class="ico">&#128250;</div>
+      <h2>Translate on my screen</h2>
+      <p>Watching a Hindi video on your own? Share that tab and get English subtitles and read-aloud right next to it.</p>
+      <a class="btn" href="/solo">Open solo mode</a>
+    </div>
+  </section>
+</main>
+
+<script>
+  // Little looping demo of what listeners see
+  const demo = [
+    ['\u0906\u091c \u0939\u092e \u0927\u094d\u092f\u093e\u0928 \u0915\u0947 \u092c\u093e\u0930\u0947 \u092e\u0947\u0902 \u092c\u093e\u0924 \u0915\u0930\u0947\u0902\u0917\u0947', 'Today we will talk about meditation.'],
+    ['\u0938\u092c\u0938\u0947 \u092a\u0939\u0932\u0947 \u0906\u0902\u0916\u0947\u0902 \u092c\u0902\u0926 \u0915\u0940\u091c\u093f\u090f', 'First of all, please close your eyes.'],
+    ['\u0927\u0940\u0930\u0947 \u0927\u0940\u0930\u0947 \u0938\u093e\u0902\u0938 \u0932\u0940\u091c\u093f\u090f', 'Breathe in slowly.'],
+  ];
+  let i = 0; const hi = document.getElementById('dHi'), en = document.getElementById('dEn');
+  function step() {
+    const [h, e] = demo[i++ % demo.length];
+    en.style.opacity = 0; hi.textContent = '';
+    let k = 0; const words = h.split(' ');
+    const t = setInterval(() => { hi.textContent = words.slice(0, ++k).join(' ') + ' \u2026'; if (k >= words.length) { clearInterval(t); hi.textContent = h; setTimeout(() => { en.textContent = e; en.style.opacity = 1; }, 450); } }, 260);
+  }
+  step(); setInterval(step, 4200);
+</script>
+</body>
+</html>

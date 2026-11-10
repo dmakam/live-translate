@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>How to test &middot; Live Translate</title>
+<link rel="stylesheet" href="/css/app.css">
+<style>
+  .tests { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 22px; }
+  @media (max-width: 1000px) { .tests { grid-template-columns: 1fr; } }
+  .tests .card { display: grid; gap: 14px; align-content: start; }
+  .time { float: right; }
+  .check { margin: 0; padding-left: 20px; color: #c9d1ff; line-height: 1.7; }
+  table { width: 100%; border-collapse: collapse; font-size: 15px; }
+  td { padding: 10px 8px; border-top: 1px solid var(--line); vertical-align: top; line-height: 1.45; }
+  td:first-child { color: #fff; font-weight: 600; width: 36%; }
+</style>
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="/"><span class="mark">&#2309;</span> Live Translate</a>
+  <div class="row"><a class="btn small ghost" href="/solo">Solo mode</a><a class="btn small" href="/host">Host a room</a></div>
+</header>
+
+<main class="page">
+  <h1 style="font-size:clamp(30px,3.4vw,48px)">Test it with any Hindi YouTube video</h1>
+  <p class="muted" style="font-size:18px; margin:0 0 28px">Do these four tests in order before a live event. You need desktop Chrome on a laptop, plus a phone for test 2.</p>
+
+  <div class="tests">
+    <div class="card">
+      <h2>1 &middot; Solo test <span class="pill time">2 min</span></h2>
+      <ol class="steps">
+        <li>In a new Chrome tab, open YouTube and play a Hindi talk with one clear speaker (search &ldquo;Hindi pravachan&rdquo; or &ldquo;Hindi motivational speech&rdquo;).</li>
+        <li>Open <a href="/solo">solo mode</a> in another tab and press <b>Share a tab &amp; translate</b>.</li>
+        <li>In Chrome's picker, choose the <b>Chrome tab</b> option, select the YouTube tab, check <b>Also share tab audio</b>, then <b>Share</b>.</li>
+        <li>Come back to the solo tab.</li>
+      </ol>
+      <p class="label" style="margin:6px 0 0">Pass if</p>
+      <ul class="check">
+        <li>The audio level bar moves with the speaker's voice</li>
+        <li>Grey Hindi text appears while they talk</li>
+        <li>An English line appears at each pause</li>
+      </ul>
+    </div>
+
+    <div class="card">
+      <h2>2 &middot; Room test with a phone <span class="pill time">5 min</span></h2>
+      <ol class="steps">
+        <li>Keep the YouTube tab playing. Open <a href="/host">Host a room</a>, name it, press <b>Start translating</b> and share the YouTube tab as before.</li>
+        <li>Scan the QR code with your phone (on mobile data too, to prove it works from anywhere).</li>
+        <li>On the phone, tap <b>Listen</b> with earbuds in.</li>
+        <li>Open the same link on a second device or ask a friend abroad to open it.</li>
+      </ol>
+      <p class="label" style="margin:6px 0 0">Pass if</p>
+      <ul class="check">
+        <li>The phone shows the same English lines as the host screen</li>
+        <li>&ldquo;Listening now&rdquo; on the host counts each device</li>
+        <li>Read-aloud speaks each new line</li>
+      </ul>
+    </div>
+
+    <div class="card">
+      <h2>3 &middot; Sync test <span class="pill time">3 min</span></h2>
+      <p class="muted" style="margin:0; line-height:1.5">Listeners abroad watch the YouTube stream, which runs 15&ndash;60 seconds behind the venue. Subtitles from the host can arrive <i>before</i> the viewer hears the words.</p>
+      <ol class="steps">
+        <li>On the phone, open the &#9881; panel and move <b>Sync with video</b> to about 20s.</li>
+        <li>Adjust until English lines appear right after the Hindi words are heard.</li>
+      </ol>
+      <p class="muted" style="margin:0">On the event day, tell listeners the delay that worked in your test.</p>
+    </div>
+
+    <div class="card">
+      <h2>4 &middot; Endurance test <span class="pill time">30&ndash;60 min</span></h2>
+      <ol class="steps">
+        <li>Play a long Hindi video (an hour-long talk) in a host room.</li>
+        <li>Leave it running; plug the laptop in and turn off sleep.</li>
+        <li>At the end, press <b>Download transcript</b> and skim it for gaps or wrong meaning.</li>
+      </ol>
+      <p class="muted" style="margin:0">Have a Hindi speaker read 10 random lines and judge whether the English keeps the meaning.</p>
+    </div>
+  </div>
+
+  <div class="card" style="margin-top:22px">
+    <h2>If something goes wrong</h2>
+    <table>
+      <tr><td>Level bar does not move</td><td>The tab audio was not shared. Stop, press Start again, and make sure &ldquo;Also share tab audio&rdquo; is on. Sharing a whole window does not include audio &mdash; pick the <b>Chrome tab</b> option.</td></tr>
+      <tr><td>Level moves but no Hindi text</td><td>Update Chrome (menu &rarr; Help &rarr; About Google Chrome). Listening to tab audio needs a recent version. Also check the laptop is online.</td></tr>
+      <tr><td>Hindi appears but English is blank</td><td>The translator is unavailable. Ask the site owner to switch on Claude translation, or update Chrome.</td></tr>
+      <tr><td>Many words are wrong</td><td>Music, crowd noise or two people talking at once confuse recognition. For the live event, feed the clean sound-desk audio instead of a room recording.</td></tr>
+      <tr><td>Using Zoom instead of YouTube</td><td>Join the Zoom in Chrome (zoom.us &rarr; &ldquo;Join from your browser&rdquo;) so it is a tab you can share. The Zoom desktop app is not a tab.</td></tr>
+      <tr><td>Phone shows &ldquo;Reconnecting&rdquo;</td><td>Normal on weak signal; it reconnects by itself and catches up on missed lines.</td></tr>
+    </table>
+  </div>
+</main>
+</body>
+</html>
