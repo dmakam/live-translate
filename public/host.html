@@ -110,6 +110,7 @@
           </div>
         </div>
         <div class="status" id="status" style="margin-top:12px; font-size:16px"><span class="dot" id="dot"></span><span id="statusText">Not started</span></div>
+        <div class="muted" id="recogLine" style="font-size:14px; margin-top:4px"></div>
         <div class="row" style="margin-top:10px; gap:18px">
           <label class="muted" id="muteRow" style="font-size:15px; display:flex; gap:10px; align-items:center"><input type="checkbox" id="mute" style="width:20px;height:20px"> Mute the Hindi on this computer</label>
           <button class="linkish" id="useMic">Using a microphone instead?</button>
@@ -143,7 +144,7 @@
 </main>
 
 <script type="module">
-import { $, getConfig, browserCheck, prepareTranslation, translateLine, HindiRecognizer, attachMeter, transcriptText, download } from '/js/common.js';
+import { $, getConfig, browserCheck, prepareTranslation, translateLine, HindiRecognizer, Chunker, PcmStreamer, attachMeter, transcriptText, download } from '/js/common.js';
 
 let source = 'tab', room = null, ws, rec, stopMeter = () => {};
 const lines = [];
@@ -249,10 +250,19 @@ $('#newEvent').onclick = () => {
 function connect() {
   try { ws?.close(); } catch {}
   ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws?room=${room.code}&host=${room.hostToken}`);
-  ws.onopen = () => { if (rec?.running) sendWs({ type: 'status', live: true }); };
+  ws.onopen = () => {
+    if (rec?.running) sendWs({ type: 'status', live: true });
+    if (rec?.running && scribe.on) sendWs({ type: 'stt-start' });   // reconnected: resume server recognition
+  };
   ws.onmessage = (e) => {
     const m = JSON.parse(e.data);
     if (m.type === 'stats') $('#count').textContent = m.listeners;
+    if (m.type === 'stt' && scribe.on) {
+      if (m.final !== undefined) { scribe.chunker.update(m.final, true); showInterim(''); }
+      else showInterim(scribe.chunker.update(m.partial, false));
+    }
+    if (m.type === 'stt-ready') setRecog('ElevenLabs Scribe (high accuracy)');
+    if (m.type === 'stt-error' && scribe.on) fallbackToChrome(m.error);
     if (m.type === 'hello' && !m.isHost) setStatus('This organiser link is not valid any more.', 'bad');
     if (m.type === 'error' || m.type === 'closed') { setStatus('This event has ended or expired. Make a new one.', 'bad'); forget(room?.code); }
   };
@@ -291,6 +301,30 @@ $('#useMic').onclick = () => {
   $('#muteRow').classList.toggle('hidden', source !== 'tab');
 };
 
+// ---------- recognition: ElevenLabs Scribe on the server, Chrome as backup ----------
+const scribe = { on: false, chunker: null, pcm: null };
+const setRecog = (t) => { $('#recogLine').textContent = t ? 'Speech recognition: ' + t : ''; };
+function showInterim(t) { $('#interim').textContent = t ? '\u2026 ' + t : ''; if (t) sendWs({ type: 'interim', hi: t }); }
+async function startScribe(stream) {
+  scribe.on = true;
+  scribe.chunker = new Chunker(onFinal);
+  scribe.pcm = new PcmStreamer();
+  sendWs({ type: 'stt-start' });
+  setRecog('connecting to ElevenLabs Scribe\u2026');
+  await scribe.pcm.start(stream, (buf) => { if (ws?.readyState === 1) ws.send(buf); });
+}
+function stopScribe() {
+  if (!scribe.on) return;
+  scribe.on = false; scribe.pcm?.stop(); sendWs({ type: 'stt-stop' });
+}
+function fallbackToChrome(why) {
+  stopScribe();
+  if (!rec?.running) return;
+  rec.startChrome();
+  setRecog('Chrome (backup)');
+  setStatus('ElevenLabs recognition stopped (' + why + '). Switched to Chrome recognition - translation continues.', 'warn');
+}
+
 $('#go').onclick = async () => {
   if (rec?.running) { rec.stop(); return; }
   try {
@@ -298,10 +332,11 @@ $('#go').onclick = async () => {
     await prepareTranslation(t => setStatus(t));
     if (!room) await createRoom();
     rec = new HindiRecognizer({
-      onInterim: (t) => { $('#interim').textContent = t ? '\u2026 ' + t : ''; if (t) sendWs({ type: 'interim', hi: t }); },
+      onInterim: (t) => showInterim(t),
       onFinal,
       onStatus: setStatus,
       onStop: () => {
+        stopScribe(); setRecog('');
         stopRecording();
         stopMeter(); sendWs({ type: 'status', live: false });
         $('#go').classList.remove('live'); $('#go').innerHTML = '&#9679; Start translating';
@@ -309,7 +344,11 @@ $('#go').onclick = async () => {
         setStatus('Paused. Listeners see "paused". Press Start to continue.');
       },
     });
-    const stream = await rec.start(source);
+    for (let i = 0; i < 30 && ws?.readyState !== 1; i++) await new Promise(r => setTimeout(r, 100));   // just-created room
+    const useScribe = cfg.stt === 'elevenlabs' && ws?.readyState === 1;
+    const stream = await rec.start(source, { recognize: !useScribe });
+    if (useScribe) await startScribe(stream).catch((e) => fallbackToChrome(e.message || 'audio'));
+    else setRecog('Chrome');
     stopMeter = attachMeter(stream, $('#meter'));
     startRecording(stream);
     if ($('#mute').checked) await applyMute();

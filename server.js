@@ -8,7 +8,7 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const { WebSocketServer } = require('ws');
+const { WebSocketServer, WebSocket } = require('ws');
 
 const PORT = Number(process.env.PORT || 3000);
 const CLAUDE_KEY = process.env.ANTHROPIC_API_KEY || '';
@@ -22,6 +22,10 @@ const EL_MODEL = process.env.ELEVENLABS_MODEL || 'eleven_flash_v2_5';
 const EL_ON = Boolean(EL_KEY && EL_VOICE);
 const DEFAULT_VOICE = process.env.TTS_VOICE || (EL_ON ? 'el:' + EL_VOICE : 'bm_george');
 const VOICE_ID_RE = /^([a-z]{2}_[a-z]+|el:[A-Za-z0-9]{8,40})$/;
+// Speech recognition: ElevenLabs Scribe v2 Realtime when a key is set (STT=chrome turns it off).
+const STT_ON = Boolean(EL_KEY) && process.env.STT !== 'chrome';
+const STT_KEYTERMS = (process.env.STT_KEYTERMS || 'Dharma,samskara,samskaras,karma,Heartfulness,Daaji,Mathura,meditation,Pranahuti,spirituality')
+  .split(',').map(t => t.trim()).filter(Boolean).slice(0, 50);
 
 // Guardrails so a public proof of concept can't run up a bill
 const LIMITS = {
@@ -271,7 +275,7 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://x');
   const p = url.pathname;
 
-  if (p === '/api/config') return json(res, 200, { claude: Boolean(CLAUDE_KEY), roomHours: LIMITS.roomHours, advanceDays: LIMITS.advanceDays, tts: { ready: tts.ready, voices: tts.voices, defaultVoice: DEFAULT_VOICE } });
+  if (p === '/api/config') return json(res, 200, { claude: Boolean(CLAUDE_KEY), roomHours: LIMITS.roomHours, advanceDays: LIMITS.advanceDays, tts: { ready: tts.ready, voices: tts.voices, defaultVoice: DEFAULT_VOICE }, stt: STT_ON ? 'elevenlabs' : 'chrome' });
 
   if (p === '/api/rooms' && req.method === 'POST') {
     sweepRooms();
@@ -363,8 +367,57 @@ const server = http.createServer(async (req, res) => {
   });
 });
 
+// ---------- speech recognition relay (ElevenLabs Scribe v2 Realtime) ----------
+// The organiser's page streams 16 kHz PCM; we forward it with our key (the key never reaches a
+// browser) and send partial / committed Hindi text back to the organiser's page.
+function startStt(room, hostWs) {
+  stopStt(room);
+  const q = new URLSearchParams({
+    model_id: 'scribe_v2_realtime', language_code: 'hi', audio_format: 'pcm_16000',
+    commit_strategy: 'vad', vad_silence_threshold_secs: '0.8',
+  });
+  q.append('secondary_languages', 'en');        // the speaker switches into English often
+  for (const k of STT_KEYTERMS) q.append('keyterms', k);
+  const el = new WebSocket((process.env.STT_URL || 'wss://api.elevenlabs.io/v1/speech-to-text/realtime') + '?' + q, { headers: { 'xi-api-key': EL_KEY } });
+  const st = { el, host: hostWs, pending: [], open: false, started: Date.now(), bytes: 0 };
+  room.stt = st;
+  el.on('open', () => { st.open = true; for (const b of st.pending) sendAudio(st, b); st.pending = []; });
+  el.on('message', (raw) => {
+    let m; try { m = JSON.parse(raw); } catch { return; }
+    const to = st.host;
+    if (m.message_type === 'partial_transcript') send(to, { type: 'stt', partial: m.text || '' });
+    else if (m.message_type === 'committed_transcript') send(to, { type: 'stt', final: m.text || '' });
+    else if (m.message_type === 'session_started') { console.log(`Scribe session started for room ${room.code}`); send(to, { type: 'stt-ready' }); }
+    else if (m.error || /error|quota|throttled|invalid/i.test(m.message_type || '')) {
+      console.error(`Scribe error (room ${room.code}):`, m.message_type, m.error || '');
+      send(to, { type: 'stt-error', error: m.message_type + (m.error ? ': ' + m.error : '') });
+      stopStt(room);
+    }
+  });
+  el.on('error', (e) => { console.error('Scribe connection error:', e.message); send(st.host, { type: 'stt-error', error: 'connection' }); stopStt(room); });
+  el.on('close', () => { if (room.stt === st) { room.stt = null; send(st.host, { type: 'stt-error', error: 'closed' }); } });
+}
+function sendAudio(st, buf) {
+  st.bytes += buf.length;
+  st.el.send(JSON.stringify({ message_type: 'input_audio_chunk', audio_base_64: buf.toString('base64'), commit: false, sample_rate: 16000 }));
+}
+function sttAudio(room, buf) {
+  const st = room.stt;
+  if (!st) return;
+  if (!st.open) { if (st.pending.length < 50) st.pending.push(buf); return; }
+  if (st.el.readyState === 1) sendAudio(st, buf);
+}
+function stopStt(room) {
+  const st = room.stt;
+  if (!st) return;
+  room.stt = null;
+  const mins = (Date.now() - st.started) / 60000;
+  console.log(`Scribe session ended for room ${room.code}: ${mins.toFixed(1)} min, ${(st.bytes / 32000 / 60).toFixed(1)} min of audio`);
+  try { st.el.close(); } catch {}
+}
+
 // ---------- websocket ----------
-const wss = new WebSocketServer({ server, path: '/ws', maxPayload: 16 * 1024 });
+const wss = new WebSocketServer({ server, path: '/ws', maxPayload: 64 * 1024 });
 
 function send(ws, obj) { if (ws.readyState === 1) ws.send(JSON.stringify(obj)); }
 function toListeners(room, obj) { const s = JSON.stringify(obj); for (const c of room.clients) if (!c.isHost && c.readyState === 1) c.send(s); }
@@ -388,9 +441,12 @@ wss.on('connection', (ws, req) => {
   send(ws, { type: 'hello', ...publicRoom(room), history: room.history, interim: room.interim, isHost: ws.isHost });
   stats(room);
 
-  ws.on('message', (raw) => {
+  ws.on('message', (raw, isBinary) => {
     if (!ws.isHost) return;
+    if (isBinary) return sttAudio(room, raw);          // organiser's audio for speech recognition
     let m; try { m = JSON.parse(raw); } catch { return; }
+    if (m.type === 'stt-start') { if (STT_ON) startStt(room, ws); else send(ws, { type: 'stt-error', error: 'not configured' }); return; }
+    if (m.type === 'stt-stop') { stopStt(room); return; }
     if (m.type === 'status') {
       clearTimeout(room.offTimer);
       setLive(room, !!m.live); touch(room); saveRooms();
@@ -421,6 +477,7 @@ wss.on('connection', (ws, req) => {
   ws.on('close', () => {
     room.clients.delete(ws); stats(room);
     // host's connection dropped: tell listeners it's paused if it doesn't come back soon
+    if (ws.isHost && room.stt && room.stt.host === ws) stopStt(room);   // never bill for an abandoned stream
     if (ws.isHost && ![...room.clients].some(c => c.isHost)) {
       clearTimeout(room.offTimer);
       room.offTimer = setTimeout(() => setLive(room, false), 20e3);

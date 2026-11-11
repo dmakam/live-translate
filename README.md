@@ -80,3 +80,10 @@ Add to `.env`, then run `bash deploy.sh`:
 It becomes the default voice for new events and is listed first. If a request fails, that line is
 spoken in the free voice instead. Billing is per character; each line is voiced once per event
 whatever the number of listeners.
+
+## Speech recognition (ElevenLabs Scribe v2 Realtime)
+
+With `ELEVENLABS_API_KEY` set, the organiser's page streams the shared tab's audio (16 kHz PCM) to
+this server, which relays it to ElevenLabs Scribe v2 Realtime (Hindi + English, key terms from
+`STT_KEYTERMS`). The key never reaches the browser. If Scribe fails, the page switches to Chrome's
+recognition automatically. The server logs minutes used per session (`docker logs live-translate`).

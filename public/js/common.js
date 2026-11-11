@@ -35,9 +35,13 @@ export async function prepareTranslation(onStatus = () => {}) {
   return 'chrome';
 }
 
+let localFailed = false;
 async function ensureLocal() {
-  if (localTranslator || !('Translator' in self)) return localTranslator;
-  try { localTranslator = await Translator.create({ sourceLanguage: 'hi', targetLanguage: 'en' }); } catch {}
+  if (localTranslator || localFailed || !('Translator' in self)) return localTranslator;
+  // The on-device model may need a download that never finishes; never let it stall the queue.
+  const timeout = new Promise((r) => setTimeout(() => r(null), 3000));
+  try { localTranslator = await Promise.race([Translator.create({ sourceLanguage: 'hi', targetLanguage: 'en' }), timeout]); } catch {}
+  if (!localTranslator) localFailed = true;
   return localTranslator;
 }
 
@@ -62,8 +66,77 @@ export async function translateLine(hi, context = [], contextEn = []) {
     } catch { engineBadge('failed'); }
   }
   const t = await ensureLocal();
-  if (t) { try { return { en: await t.translate(hi), engine: 'chrome' }; } catch {} }
+  if (t) { try { return { en: await Promise.race([t.translate(hi), new Promise((_, x) => setTimeout(x, 4000))]), engine: 'chrome' }; } catch {} }
   return { en: '', engine: 'none' };
+}
+
+// ---------------- chunking ----------------
+// Fluent speakers rarely pause, so a recogniser keeps one long segment open. Instead of
+// waiting for it to close, send the settled part for translation and keep listening.
+const HOLD = 2;   // the last few words can still change, so never send them early
+const END_AFTER = /^(\u0939\u0948|\u0939\u0948\u0902|\u0925\u093e|\u0925\u0947|\u0925\u0940|\u0917\u093e|\u0917\u0947|\u0917\u0940)$/; // hai, hain, tha, the, thi, ga, ge, gi
+const BREAK_BEFORE = /^(\u0932\u0947\u0915\u093f\u0928|\u0915\u094d\u092f\u094b\u0902\u0915\u093f|\u0914\u0930|\u0924\u094b|\u092a\u0930|\u091c\u092c|\u0905\u0917\u0930)$/; // lekin, kyonki, aur, to, par, jab, agar
+export class Chunker {
+  constructor(onChunk) { this.onChunk = onChunk; this.done = 0; this.started = 0; }
+  // text: the whole current segment so far; isFinal: the recogniser closed the segment.
+  // Returns the words not yet sent (for the live "in progress" display).
+  update(text, isFinal) {
+    const words = String(text || '').trim().split(/\s+/).filter(Boolean);
+    if (isFinal) {
+      const rest = words.slice(this.done).join(' ');
+      if (rest) this.onChunk(rest);
+      this.done = 0; this.started = 0;
+      return '';
+    }
+    if (!this.started) this.started = Date.now();
+    const settled = words.length - HOLD;
+    const fresh = settled - this.done;
+    const age = Date.now() - this.started;
+    let cutAt = -1;
+    // Short chunks keep the English close to the speaker: cut at a natural break after
+    // 5+ words, or anywhere after 12 words / 5 seconds.
+    if (fresh >= 5) {
+      for (let k = settled; k >= this.done + 5; k--) {
+        if (END_AFTER.test(words[k - 1] || '') || BREAK_BEFORE.test(words[k] || '')) { cutAt = k; break; }
+      }
+    }
+    if (cutAt < 0 && (fresh >= 12 || (fresh >= 4 && age > 5000))) cutAt = settled;
+    if (cutAt > this.done) {
+      this.onChunk(words.slice(this.done, cutAt).join(' '));
+      this.done = cutAt; this.started = Date.now();
+    }
+    return words.slice(this.done).join(' ');
+  }
+}
+
+// ---------------- audio stream for server-side recognition (ElevenLabs Scribe) ----------------
+// Turns the captured tab audio into 16 kHz 16-bit mono PCM and hands 100 ms frames to send().
+const PCM_WORKLET = `
+class Pcm extends AudioWorkletProcessor {
+  constructor() { super(); this.buf = new Int16Array(1600); this.n = 0; }
+  process(inputs) {
+    const ch = inputs[0] && inputs[0][0];
+    if (ch) for (let i = 0; i < ch.length; i++) {
+      const v = Math.max(-1, Math.min(1, ch[i]));
+      this.buf[this.n++] = v < 0 ? v * 0x8000 : v * 0x7fff;
+      if (this.n === this.buf.length) { this.port.postMessage(this.buf.buffer.slice(0)); this.n = 0; }
+    }
+    return true;
+  }
+}
+registerProcessor('pcm16', Pcm);`;
+export class PcmStreamer {
+  async start(stream, send) {
+    this.ctx = new AudioContext({ sampleRate: 16000 });   // the browser resamples the tab audio
+    const url = URL.createObjectURL(new Blob([PCM_WORKLET], { type: 'text/javascript' }));
+    await this.ctx.audioWorklet.addModule(url);
+    URL.revokeObjectURL(url);
+    this.src = this.ctx.createMediaStreamSource(new MediaStream(stream.getAudioTracks()));
+    this.node = new AudioWorkletNode(this.ctx, 'pcm16');
+    this.node.port.onmessage = (e) => send(e.data);
+    this.src.connect(this.node);   // not connected to the speakers: no echo
+  }
+  stop() { try { this.src?.disconnect(); this.node?.disconnect(); this.ctx?.close(); } catch {} this.ctx = null; }
 }
 
 // ---------------- capture + recognition ----------------
@@ -76,7 +149,7 @@ export class HindiRecognizer {
     this.track = null;
   }
 
-  async start(source, { muteLocal = false } = {}) {
+  async start(source, { muteLocal = false, recognize = true } = {}) {
     if (source === 'tab') {
       // Chrome needs video in the request; we ignore it. User must tick "Also share tab audio".
       this.stream = await navigator.mediaDevices.getDisplayMedia({
@@ -98,8 +171,12 @@ export class HindiRecognizer {
     }
     this.track.addEventListener('ended', () => this.stop());
     this.running = true;
-    this._loop();
+    if (recognize) this._loop();
     return this.stream;
+  }
+
+  // Switch to Chrome's own recognition on the already-captured audio (backup for Scribe).
+  startChrome() { if (this.running && !this.rec) this._loop();
   }
 
   _loop() {
@@ -111,44 +188,15 @@ export class HindiRecognizer {
     r.continuous = true;
     r.interimResults = true;
     r.maxAlternatives = 1;
-    // Chunking without restarting: Chrome keeps one long result open while a fluent speaker
-    // talks. Instead of stopping recognition (which loses the words spoken during the restart),
-    // we send the settled part of the open result for translation and keep listening.
-    const consumed = new Map();   // result index -> words already sent
-    const started = new Map();    // result index -> when the current chunk began
-    const HOLD = 2;               // the last few words can still change, so never send them early
-    const END_AFTER = /^(\u0939\u0948|\u0939\u0948\u0902|\u0925\u093e|\u0925\u0947|\u0925\u0940|\u0917\u093e|\u0917\u0947|\u0917\u0940)$/; // hai, hain, tha, the, thi, ga, ge, gi (not 'ho': usually followed by jata/jate)
-    const BREAK_BEFORE = /^(\u0932\u0947\u0915\u093f\u0928|\u0915\u094d\u092f\u094b\u0902\u0915\u093f|\u0914\u0930|\u0924\u094b|\u092a\u0930|\u091c\u092c|\u0905\u0917\u0930)$/; // lekin, kyonki, aur, to, par, jab, agar
+    // One Chunker per Chrome result slot (see Chunker below).
+    const chunkers = new Map();
     r.onresult = (e) => {
       let interim = '';
       for (let i = e.resultIndex; i < e.results.length; i++) {
         const res = e.results[i];
-        const words = res[0].transcript.trim().split(/\s+/).filter(Boolean);
-        const done = consumed.get(i) || 0;
-        if (res.isFinal) {
-          const rest = words.slice(done).join(' ');
-          if (rest) this.onFinal?.(rest);
-          consumed.delete(i); started.delete(i);
-          continue;
-        }
-        if (!started.has(i)) started.set(i, Date.now());
-        const settled = words.length - HOLD;            // words we may send now
-        const fresh = settled - done;
-        const age = Date.now() - started.get(i);
-        let cutAt = -1;
-        // Short chunks keep the English close to the speaker: cut at a natural break after
-        // 5+ words, or anywhere after 12 words / 5 seconds.
-        if (fresh >= 5) {
-          for (let k = settled; k >= done + 5; k--) {
-            if (END_AFTER.test(words[k - 1] || '') || BREAK_BEFORE.test(words[k] || '')) { cutAt = k; break; }
-          }
-        }
-        if (cutAt < 0 && (fresh >= 12 || (fresh >= 4 && age > 5000))) cutAt = settled;
-        if (cutAt > done) {
-          this.onFinal?.(words.slice(done, cutAt).join(' '));
-          consumed.set(i, cutAt); started.set(i, Date.now());
-        }
-        interim += words.slice(consumed.get(i) || 0).join(' ') + ' ';
+        if (!chunkers.has(i)) chunkers.set(i, new Chunker((t) => this.onFinal?.(t)));
+        interim += chunkers.get(i).update(res[0].transcript, res.isFinal) + ' ';
+        if (res.isFinal) chunkers.delete(i);
       }
       this.onInterim?.(interim.trim());
     };
