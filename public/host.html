@@ -113,6 +113,7 @@
         <div class="row" style="margin-top:10px; gap:18px">
           <label class="muted" id="muteRow" style="font-size:15px; display:flex; gap:10px; align-items:center"><input type="checkbox" id="mute" style="width:20px;height:20px"> Mute the Hindi on this computer</label>
           <button class="linkish" id="useMic">Using a microphone instead?</button>
+          <label class="muted" style="font-size:15px; display:flex; gap:10px; align-items:center"><input type="checkbox" id="recBox" style="width:20px;height:20px"> Save a recording of the Hindi audio (for checking quality)</label>
         </div>
         <div class="interim" id="interim"></div>
         <div class="subs" id="log"></div>
@@ -301,6 +302,7 @@ $('#go').onclick = async () => {
       onFinal,
       onStatus: setStatus,
       onStop: () => {
+        stopRecording();
         stopMeter(); sendWs({ type: 'status', live: false });
         $('#go').classList.remove('live'); $('#go').innerHTML = '&#9679; Start translating';
         $('#dot').classList.remove('on'); $('#interim').textContent = '';
@@ -309,6 +311,7 @@ $('#go').onclick = async () => {
     });
     const stream = await rec.start(source);
     stopMeter = attachMeter(stream, $('#meter'));
+    startRecording(stream);
     if ($('#mute').checked) await applyMute();
     sendWs({ type: 'status', live: true });
     $('#go').classList.add('live'); $('#go').innerHTML = '&#9632; Pause';
@@ -321,6 +324,29 @@ $('#go').onclick = async () => {
   }
 };
 
+// ---------- optional recording of the captured Hindi audio ----------
+let recorder = null, recChunks = [], recStartedAt = null;
+function startRecording(stream) {
+  if (!$('#recBox').checked || !window.MediaRecorder) return;
+  try {
+    const audioOnly = new MediaStream(stream.getAudioTracks());
+    const type = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4'].find(t => MediaRecorder.isTypeSupported(t)) || '';
+    recorder = new MediaRecorder(audioOnly, type ? { mimeType: type } : {});
+    recChunks = []; recStartedAt = new Date();
+    recorder.ondataavailable = (e) => { if (e.data.size) recChunks.push(e.data); };
+    recorder.onstop = () => {
+      const blob = new Blob(recChunks, { type: recorder.mimeType || 'audio/webm' });
+      const a = document.createElement('a');
+      const stamp = recStartedAt.toISOString().replace(/[:.]/g, '-');
+      a.href = URL.createObjectURL(blob); a.download = `hindi-audio-${room?.code || 'event'}-${stamp}.${(recorder.mimeType || '').includes('mp4') ? 'm4a' : 'webm'}`;
+      a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+      recorder = null;
+    };
+    recorder.start(1000);
+  } catch (e) { console.warn('recording not available', e); }
+}
+function stopRecording() { try { if (recorder && recorder.state !== 'inactive') recorder.stop(); } catch {} }
+
 async function applyMute() {
   if (!rec?.running || source !== 'tab') return;
   const ok = await rec.setLocalMute($('#mute').checked);
@@ -328,7 +354,8 @@ async function applyMute() {
 }
 $('#mute').onchange = applyMute;
 
-$('#dl').onclick = () => download(`transcript-${room?.code || 'event'}.txt`, transcriptText(lines, room?.title));
+$('#dl').onclick = () => download(`transcript-${room?.code || 'event'}.txt`,
+  (recStartedAt ? 'Recording started: ' + recStartedAt.toISOString() + '\n' : '') + transcriptText(lines.map(l => ({ ...l, tIso: new Date(l.t).toISOString() })), room?.title));
 $('#clear').onclick = () => sendWs({ type: 'clear' });
 $('#end').onclick = () => {
   if (!confirm('End this event? The link will stop working for everyone.')) return;

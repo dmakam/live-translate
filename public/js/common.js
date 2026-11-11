@@ -438,7 +438,7 @@ export function voicePicker(selectEl, testBtn, rateEl, reader, aiOptions = null)
 
 export function transcriptText(lines, title) {
   const head = (title ? title + '\n' : '') + 'Live Hindi to English transcript - ' + new Date().toLocaleString() + '\n\n';
-  return head + lines.map(l => `[${new Date(l.t).toLocaleTimeString()}]\nHI: ${l.hi}\nEN: ${l.en}\n`).join('\n');
+  return head + lines.map(l => `[${new Date(l.t).toLocaleTimeString()}${l.tIso ? ' | ' + l.tIso : ''}]\nHI: ${l.hi}\nEN: ${l.en}\n`).join('\n');
 }
 
 export function download(name, text) {
