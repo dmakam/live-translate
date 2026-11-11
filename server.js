@@ -22,6 +22,8 @@ const EL_MODEL = process.env.ELEVENLABS_MODEL || 'eleven_flash_v2_5';
 const EL_ON = Boolean(EL_KEY && EL_VOICE);
 const DEFAULT_VOICE = process.env.TTS_VOICE || (EL_ON ? 'el:' + EL_VOICE : 'bm_george');
 const VOICE_ID_RE = /^([a-z]{2}_[a-z]+|el:[A-Za-z0-9]{8,40})$/;
+// Rooms remember the voice they were made with; an old ElevenLabs ID follows the one in .env now.
+const roomVoice = (r) => { const v = r.voice || DEFAULT_VOICE; return v.startsWith('el:') ? (EL_ON ? 'el:' + EL_VOICE : DEFAULT_VOICE) : v; };
 // Speech recognition: ElevenLabs Scribe v2 Realtime when a key is set (STT=chrome turns it off).
 const STT_ON = Boolean(EL_KEY) && process.env.STT !== 'chrome';
 const STT_KEYTERMS = (process.env.STT_KEYTERMS || 'Dharma,samskara,samskaras,karma,Heartfulness,Daaji,Mathura,meditation,Pranahuti,spirituality,Pramadam,Yudhishthira,Yaksha,Mahabharata,Dharmaputra,Gurudev')
@@ -98,7 +100,7 @@ function sweepRooms() {
 }
 setInterval(sweepRooms, 60e3);
 
-const publicRoom = (r) => ({ code: r.code, title: r.title, startsAt: r.startsAt || null, live: !!r.live, expiresAt: r.expiresAt, voice: r.voice || DEFAULT_VOICE, naturalVoice: tts.ready });
+const publicRoom = (r) => ({ code: r.code, title: r.title, startsAt: r.startsAt || null, live: !!r.live, expiresAt: r.expiresAt, voice: roomVoice(r), naturalVoice: tts.ready });
 
 // ---------- translation ----------
 const ipHits = new Map(); // ip -> [timestamps]
@@ -231,8 +233,11 @@ function addSpeech(room, line) {
   sp.parts.push(line.en.trim()); sp.lastId = line.id;
   clearTimeout(sp.timer);
   const text = sp.parts.join(' ');
-  if (SENTENCE_END.test(text) || text.length > 240 || Date.now() - sp.firstAt > 9000) flushSpeech(room);
-  else sp.timer = setTimeout(() => flushSpeech(room), 2500);   // speaker paused: say what we have
+  // Speak at a full stop, or at a comma once there is a decent phrase (8+ words), so long
+  // sentences do not leave the listener in silence.
+  const words = text.split(/\s+/).length;
+  if (SENTENCE_END.test(text) || (/[,;:\u2014]\s*$/.test(text) && words >= 8) || text.length > 200 || Date.now() - sp.firstAt > 7000) flushSpeech(room);
+  else sp.timer = setTimeout(() => flushSpeech(room), 1200);   // speaker paused: say what we have
 }
 function flushSpeech(room) {
   const sp = room.speech;
@@ -255,7 +260,7 @@ async function runTts() {
   if (!job) return;
   ttsBusy = true;
   try {
-    const buf = await ttsSpeak(job.line.en, job.room.voice || DEFAULT_VOICE, job.room.lastSpoken);
+    const buf = await ttsSpeak(job.line.en, roomVoice(job.room), job.room.lastSpoken);
     job.room.lastSpoken = job.line.en;
     audioStore.set(job.line.id, buf);
     while (audioStore.size > 400) audioStore.delete(audioStore.keys().next().value);

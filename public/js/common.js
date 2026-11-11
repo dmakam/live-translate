@@ -296,16 +296,26 @@ export class AIPlayer {
   // only if more than three are waiting is the oldest skipped.
   catchUp() { const n = this.queue.length; return Math.min(this.rate * (n >= 2 ? 1.3 : n === 1 ? 1.15 : 1), 1.7); }
   play(url, text) {
-    this.queue.push({ url, text });
-    while (this.queue.length > 3) this.queue.shift();
+    const it = { url, text };
+    // Download the clip now, while the current one is still playing, so the next sentence
+    // starts with no gap (waiting to download each clip added ~0.5 s of silence between lines).
+    if (!url.startsWith('data:')) {
+      it.ready = fetch(url).then((r) => (r.ok ? r.blob() : null)).then((b) => (it.blob = b ? URL.createObjectURL(b) : null)).catch(() => null);
+    }
+    this.queue.push(it);
+    while (this.queue.length > 3) this._drop(this.queue.shift());
     if (!this.playing) this._next();
     else this.el.playbackRate = this.catchUp();
   }
-  _next() {
+  _drop(it) { if (it?.blob) setTimeout(() => URL.revokeObjectURL(it.blob), 1000); }
+  async _next() {
     const it = this.queue.shift();
     if (!it) return;
-    this.cur = it; this.playing = true;
-    this.el.src = it.url; this.el.playbackRate = this.catchUp();
+    this.playing = true;
+    if (it.ready && !it.blob) await Promise.race([it.ready, new Promise((r) => setTimeout(r, 4000))]);
+    if (this.cur) this._drop(this.cur);
+    this.cur = it;
+    this.el.src = it.blob || it.url; this.el.playbackRate = this.catchUp();
     this.el.play().catch(() => { this.playing = false; this.onFail?.(it.text); this._next(); });
   }
   stop() { this.queue = []; this.playing = false; try { this.el.pause(); } catch {} }
