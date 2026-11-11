@@ -119,7 +119,9 @@ const SYSTEM_PROMPT =
   'sometimes with recognition errors) into natural English subtitles for viewers of a talk or event.\n' +
   'Speech is cut into chunks at fixed lengths, so the line may be a fragment that starts or ends mid-sentence. ' +
   'Translate exactly what the fragment says, so it reads as a natural continuation of the previous English line. ' +
-  'Do not complete the thought, and do not repeat what the previous English already said.\n' +
+  'Do not complete the thought. Translate EVERYTHING in this line: speakers often repeat a phrase on purpose ' +
+  '(for emphasis, e.g. "that is Dharma ... that is Dharma"), so translate repeats again; never drop words, numbers or prices. ' +
+  'The chunks do not overlap, so nothing in this line has been translated before.\n' +
   'If the line ends mid-sentence, end your English with NO final punctuation; put a full stop, question mark or ' +
   'exclamation mark only when the sentence is really complete.\n' +
   'Keep names, Sanskrit terms and English words as spoken.\n' +
