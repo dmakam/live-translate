@@ -237,14 +237,18 @@ export class AIPlayer {
   unlock() { this.el.src = SILENT_MP3; this.el.play().catch(() => {}); }
   play(url, text) {
     this.queue.push({ url, text });
-    while (this.queue.length > 2) this.queue.shift();   // stay close to live
+    // Stay close to live: at most one line waiting; a newer line replaces an older waiting one.
+    while (this.queue.length > 1) this.queue.shift();
     if (!this.playing) this._next();
+    // Falling behind: speed up the line that is playing now.
+    else this.el.playbackRate = Math.min(this.rate * 1.15, 1.6);
   }
   _next() {
     const it = this.queue.shift();
     if (!it) return;
     this.cur = it; this.playing = true;
-    this.el.src = it.url; this.el.playbackRate = this.rate;
+    // If another line is already waiting, read this one a little faster to catch up.
+    this.el.src = it.url; this.el.playbackRate = this.queue.length ? Math.min(this.rate * 1.15, 1.6) : this.rate;
     this.el.play().catch(() => { this.playing = false; this.onFail?.(it.text); this._next(); });
   }
   stop() { this.queue = []; this.playing = false; try { this.el.pause(); } catch {} }
