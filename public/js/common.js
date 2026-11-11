@@ -116,7 +116,7 @@ export class HindiRecognizer {
     // we send the settled part of the open result for translation and keep listening.
     const consumed = new Map();   // result index -> words already sent
     const started = new Map();    // result index -> when the current chunk began
-    const HOLD = 3;               // the last few words can still change, so never send them early
+    const HOLD = 2;               // the last few words can still change, so never send them early
     const END_AFTER = /^(\u0939\u0948|\u0939\u0948\u0902|\u0925\u093e|\u0925\u0947|\u0925\u0940|\u0939\u094b|\u0939\u094b\u0917\u093e|\u0917\u093e|\u0917\u0947|\u0917\u0940)$/; // hai, hain, tha, the, thi, ho, hoga, ga, ge, gi
     const BREAK_BEFORE = /^(\u0932\u0947\u0915\u093f\u0928|\u0915\u094d\u092f\u094b\u0902\u0915\u093f|\u0914\u0930|\u0924\u094b|\u092a\u0930|\u091c\u092c|\u0905\u0917\u0930)$/; // lekin, kyonki, aur, to, par, jab, agar
     r.onresult = (e) => {
@@ -136,13 +136,14 @@ export class HindiRecognizer {
         const fresh = settled - done;
         const age = Date.now() - started.get(i);
         let cutAt = -1;
-        if (fresh >= 10) {
-          // prefer a natural break inside the settled words (scan backwards)
-          for (let k = settled; k >= done + 8; k--) {
+        // Short chunks keep the English close to the speaker: cut at a natural break after
+        // 5+ words, or anywhere after 12 words / 5 seconds.
+        if (fresh >= 5) {
+          for (let k = settled; k >= done + 5; k--) {
             if (END_AFTER.test(words[k - 1] || '') || BREAK_BEFORE.test(words[k] || '')) { cutAt = k; break; }
           }
         }
-        if (cutAt < 0 && (fresh >= 18 || (fresh >= 6 && age > 8000))) cutAt = settled;
+        if (cutAt < 0 && (fresh >= 12 || (fresh >= 4 && age > 5000))) cutAt = settled;
         if (cutAt > done) {
           this.onFinal?.(words.slice(done, cutAt).join(' '));
           consumed.set(i, cutAt); started.set(i, Date.now());
@@ -235,20 +236,20 @@ export class AIPlayer {
     this.el.onerror = () => { const it = this.cur; this.playing = false; if (it && it.url !== SILENT_MP3) this.onFail?.(it.text); this._next(); };
   }
   unlock() { this.el.src = SILENT_MP3; this.el.play().catch(() => {}); }
+  // Every line is spoken. When lines are waiting, speech speeds up gently to catch up;
+  // only if more than three are waiting is the oldest skipped.
+  catchUp() { const n = this.queue.length; return Math.min(this.rate * (n >= 2 ? 1.3 : n === 1 ? 1.15 : 1), 1.7); }
   play(url, text) {
     this.queue.push({ url, text });
-    // Stay close to live: at most one line waiting; a newer line replaces an older waiting one.
-    while (this.queue.length > 1) this.queue.shift();
+    while (this.queue.length > 3) this.queue.shift();
     if (!this.playing) this._next();
-    // Falling behind: speed up the line that is playing now.
-    else this.el.playbackRate = Math.min(this.rate * 1.15, 1.6);
+    else this.el.playbackRate = this.catchUp();
   }
   _next() {
     const it = this.queue.shift();
     if (!it) return;
     this.cur = it; this.playing = true;
-    // If another line is already waiting, read this one a little faster to catch up.
-    this.el.src = it.url; this.el.playbackRate = this.queue.length ? Math.min(this.rate * 1.15, 1.6) : this.rate;
+    this.el.src = it.url; this.el.playbackRate = this.catchUp();
     this.el.play().catch(() => { this.playing = false; this.onFail?.(it.text); this._next(); });
   }
   stop() { this.queue = []; this.playing = false; try { this.el.pause(); } catch {} }
