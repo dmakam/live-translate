@@ -76,6 +76,11 @@ export async function translateLine(hi, context = [], contextEn = []) {
 const HOLD = 2;   // the last few words can still change, so never send them early
 const END_AFTER = /^(\u0939\u0948|\u0939\u0948\u0902|\u0925\u093e|\u0925\u0947|\u0925\u0940|\u0917\u093e|\u0917\u0947|\u0917\u0940)$/; // hai, hain, tha, the, thi, ga, ge, gi
 const BREAK_BEFORE = /^(\u0932\u0947\u0915\u093f\u0928|\u0915\u094d\u092f\u094b\u0902\u0915\u093f|\u0914\u0930|\u0924\u094b|\u092a\u0930|\u091c\u092c|\u0905\u0917\u0930)$/; // lekin, kyonki, aur, to, par, jab, agar
+// rahe, raha, rahi, hai, hain, tha, the, thi, jata, jate, jati, gaya, gaye, gayi, sakte, sakta, sakti, pate, pata, chuke, diya, liya, hota, hote, hoti
+const AUX_START = /^(\u0930\u0939\u0947|\u0930\u0939\u093e|\u0930\u0939\u0940|\u0939\u0948|\u0939\u0948\u0902|\u0925\u093e|\u0925\u0947|\u0925\u0940|\u091c\u093e\u0924\u093e|\u091c\u093e\u0924\u0947|\u091c\u093e\u0924\u0940|\u0917\u092f\u093e|\u0917\u090f|\u0917\u0908|\u0938\u0915\u0924\u0947|\u0938\u0915\u0924\u093e|\u0938\u0915\u0924\u0940|\u092a\u093e\u0924\u0947|\u092a\u093e\u0924\u093e|\u091a\u0941\u0915\u0947|\u0926\u093f\u092f\u093e|\u0932\u093f\u092f\u093e|\u0939\u094b\u0924\u093e|\u0939\u094b\u0924\u0947|\u0939\u094b\u0924\u0940)[\u0964.,]?$/;
+const bare = (w) => String(w || '').replace(/[\u0964\u0965.,?!;:"')]+$/, '');
+// A word ending a sentence (Scribe adds punctuation, e.g. "\u0939\u0948\u0964") or a sentence-final verb ending.
+const isBreakAfter = (w) => /[\u0964\u0965.?!]["')]*$/.test(w || '') || END_AFTER.test(bare(w));
 export class Chunker {
   constructor(onChunk) { this.onChunk = onChunk; this.done = 0; this.started = 0; }
   // text: the whole current segment so far; isFinal: the recogniser closed the segment.
@@ -97,10 +102,13 @@ export class Chunker {
     // 5+ words, or anywhere after 12 words / 5 seconds.
     if (fresh >= 5) {
       for (let k = settled; k >= this.done + 5; k--) {
-        if (END_AFTER.test(words[k - 1] || '') || BREAK_BEFORE.test(words[k] || '')) { cutAt = k; break; }
+        if (isBreakAfter(words[k - 1]) || BREAK_BEFORE.test(bare(words[k]))) { cutAt = k; break; }
       }
     }
     if (cutAt < 0 && (fresh >= 12 || (fresh >= 4 && age > 5000))) cutAt = settled;
+    // Never start the next chunk with a helper verb ("maan | rahe hain"): move the cut back
+    // so the helper stays with its verb.
+    while (cutAt > this.done + 3 && AUX_START.test(words[cutAt] || '') && !isBreakAfter(words[cutAt - 1])) cutAt--;
     if (cutAt > this.done) {
       this.onChunk(words.slice(this.done, cutAt).join(' '));
       this.done = cutAt; this.started = Date.now();

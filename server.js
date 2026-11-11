@@ -129,6 +129,11 @@ const SYSTEM_PROMPT =
   'If the line ends mid-sentence, end your English with NO final punctuation; put a full stop, question mark or ' +
   'exclamation mark only when the sentence is really complete.\n' +
   'Keep names, Sanskrit terms and English words as spoken.\n' +
+  'Speech recognition sometimes writes a Hindi word in English letters: "bus" usually means \u092c\u0938 ' +
+  '(e.g. "\u092e\u0947\u0930\u0947 bus \u0915\u0947 \u092c\u093e\u0939\u0930" = "beyond my control"), "to" may be \u0924\u094b ("so"). ' +
+  'Translate by the meaning in the Hindi sentence, not the English spelling. ' +
+  'If a word looks like a strange proper name that does not fit, it is probably a misheard ordinary word: ' +
+  'infer the likely meaning from context instead of inventing a name.\n' +
   'Reply with ONLY <en>the English</en>. Never explain, never comment, never ask questions, never leave it empty: ' +
   'even for a filler word or a line that repeats an earlier one, give the closest short English (for example <en>and then</en>).';
 
