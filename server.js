@@ -14,7 +14,14 @@ const PORT = Number(process.env.PORT || 3000);
 const CLAUDE_KEY = process.env.ANTHROPIC_API_KEY || '';
 const CLAUDE_MODEL = process.env.CLAUDE_MODEL || 'claude-haiku-5-5';
 const TTS_URL = process.env.TTS_URL || '';           // e.g. http://live-translate-tts:8000 (natural AI voice)
-const DEFAULT_VOICE = process.env.TTS_VOICE || 'bm_george';
+// Optional premium voice: ElevenLabs. Set ELEVENLABS_API_KEY and ELEVENLABS_VOICE_ID in .env.
+const EL_KEY = process.env.ELEVENLABS_API_KEY || '';
+const EL_VOICE = process.env.ELEVENLABS_VOICE_ID || '';
+const EL_NAME = process.env.ELEVENLABS_VOICE_NAME || 'Premium Indian voice';
+const EL_MODEL = process.env.ELEVENLABS_MODEL || 'eleven_flash_v2_5';
+const EL_ON = Boolean(EL_KEY && EL_VOICE);
+const DEFAULT_VOICE = process.env.TTS_VOICE || (EL_ON ? 'el:' + EL_VOICE : 'bm_george');
+const VOICE_ID_RE = /^([a-z]{2}_[a-z]+|el:[A-Za-z0-9]{8,40})$/;
 
 // Guardrails so a public proof of concept can't run up a bill
 const LIMITS = {
@@ -139,18 +146,37 @@ async function claudeTranslate(hi, context, contextEn) {
 }
 
 // ---------- natural voice (Kokoro service) ----------
-const tts = { ready: false, voices: [] };
+const tts = { ready: EL_ON, voices: EL_ON ? [{ id: 'el:' + EL_VOICE, label: EL_NAME + ' \u00b7 ElevenLabs' }] : [] };
 async function checkTts() {
   if (!TTS_URL) return;
   try {
     const j = await (await fetch(TTS_URL + '/health', { signal: AbortSignal.timeout(4000) })).json();
     if (!tts.ready && j.ok) console.log(`Natural voice service: self-test ${j.self_test}x real time - ${j.fast_enough === false ? 'too slow, using device voices' : 'in use'}`);
-    tts.ready = !!j.ok && j.fast_enough !== false; tts.voices = j.voices || []; tts.selfTest = j.self_test;
-  } catch { if (tts.ready) console.error('Natural voice service not reachable'); tts.ready = false; }
+    const kokoroOk = !!j.ok && j.fast_enough !== false;
+    tts.ready = EL_ON || kokoroOk; tts.selfTest = j.self_test;
+    tts.voices = [...(EL_ON ? [{ id: 'el:' + EL_VOICE, label: EL_NAME + ' \u00b7 ElevenLabs' }] : []), ...(kokoroOk ? j.voices || [] : [])];
+  } catch { if (tts.ready && !EL_ON) console.error('Natural voice service not reachable'); tts.ready = EL_ON; tts.voices = EL_ON ? tts.voices.filter(v => v.id.startsWith('el:')) : []; }
 }
 checkTts(); setInterval(checkTts, 30e3);
 
+async function elevenSpeak(text, voiceId) {
+  const r = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(voiceId)}?output_format=mp3_44100_128`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', 'xi-api-key': EL_KEY, Accept: 'audio/mpeg' },
+    body: JSON.stringify({ text, model_id: EL_MODEL }), signal: AbortSignal.timeout(30000),
+  });
+  if (!r.ok) throw new Error('elevenlabs ' + r.status + ' ' + (await r.text()).slice(0, 160));
+  return Buffer.from(await r.arrayBuffer());
+}
+
 async function ttsSpeak(text, voice) {
+  if (voice && voice.startsWith('el:')) {
+    try { return await elevenSpeak(text, voice.slice(3)); }
+    catch (e) {
+      console.error('ElevenLabs failed, using the free voice for this line:', e.message);
+      if (!TTS_URL) throw e;
+      voice = 'bm_george';
+    }
+  }
   const r = await fetch(TTS_URL + '/speak', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ text, voice }), signal: AbortSignal.timeout(30000),
@@ -229,7 +255,7 @@ const server = http.createServer(async (req, res) => {
     const room = {
       code, hostToken: crypto.randomBytes(16).toString('hex'),
       title: String(body.title || '').slice(0, 80), startsAt, created,
-      voice: /^[a-z]{2}_[a-z]+$/.test(body.voice || '') ? body.voice : DEFAULT_VOICE,
+      voice: VOICE_ID_RE.test(body.voice || '') ? body.voice : DEFAULT_VOICE,
       // open until the event plus a few hours; links without a start time last 2 days unless used
       expiresAt: Math.max(startsAt || created + 2 * 86400e3, created) + LIMITS.roomHours * 3600e3,
       live: false, history: [], interim: null, clients: new Set(),
@@ -342,7 +368,7 @@ wss.on('connection', (ws, req) => {
       if (room.history.length > LIMITS.historyLines) room.history.shift();
       toListeners(room, { type: 'final', line });
       queueRoomAudio(room, line);
-    } else if (m.type === 'voice' && /^[a-z]{2}_[a-z]+$/.test(m.voice || '')) {
+    } else if (m.type === 'voice' && VOICE_ID_RE.test(m.voice || '')) {
       room.voice = m.voice; saveRooms();
     } else if (m.type === 'clear') {
       room.history = []; room.interim = null;

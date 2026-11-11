@@ -68,3 +68,15 @@ validates and reloads Caddy. It never edits the shared Caddyfile. The container 
 `tts/` is a small Python service running the open-source Kokoro model on the CPU (about 630 MB
 of memory). At start-up it times itself; if it cannot create speech faster than real time, the app
 keeps using device voices. Check it with `docker logs live-translate-tts | grep Self-test`.
+
+## Premium voice (optional, ElevenLabs)
+
+Add to `.env`, then run `bash deploy.sh`:
+
+    ELEVENLABS_API_KEY=...            # from elevenlabs.io > Developers > API keys
+    ELEVENLABS_VOICE_ID=...           # the voice's ID from the ElevenLabs Voice Library
+    ELEVENLABS_VOICE_NAME=Aaditya     # how it is labelled for organisers
+
+It becomes the default voice for new events and is listed first. If a request fails, that line is
+spoken in the free voice instead. Billing is per character; each line is voiced once per event
+whatever the number of listeners.
