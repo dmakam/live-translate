@@ -117,7 +117,7 @@ export class HindiRecognizer {
     const consumed = new Map();   // result index -> words already sent
     const started = new Map();    // result index -> when the current chunk began
     const HOLD = 2;               // the last few words can still change, so never send them early
-    const END_AFTER = /^(\u0939\u0948|\u0939\u0948\u0902|\u0925\u093e|\u0925\u0947|\u0925\u0940|\u0939\u094b|\u0939\u094b\u0917\u093e|\u0917\u093e|\u0917\u0947|\u0917\u0940)$/; // hai, hain, tha, the, thi, ho, hoga, ga, ge, gi
+    const END_AFTER = /^(\u0939\u0948|\u0939\u0948\u0902|\u0925\u093e|\u0925\u0947|\u0925\u0940|\u0917\u093e|\u0917\u0947|\u0917\u0940)$/; // hai, hain, tha, the, thi, ga, ge, gi (not 'ho': usually followed by jata/jate)
     const BREAK_BEFORE = /^(\u0932\u0947\u0915\u093f\u0928|\u0915\u094d\u092f\u094b\u0902\u0915\u093f|\u0914\u0930|\u0924\u094b|\u092a\u0930|\u091c\u092c|\u0905\u0917\u0930)$/; // lekin, kyonki, aur, to, par, jab, agar
     r.onresult = (e) => {
       let interim = '';

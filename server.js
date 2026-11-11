@@ -128,24 +128,35 @@ const SYSTEM_PROMPT =
   'Reply with ONLY <en>the English</en>. Never explain, never comment, never ask questions, never leave it empty: ' +
   'even for a filler word or a line that repeats an earlier one, give the closest short English (for example <en>and then</en>).';
 
-async function callClaude(userText) {
+async function callClaude(userText, system = SYSTEM_PROMPT, tagged = true) {
   const r = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'x-api-key': CLAUDE_KEY, 'anthropic-version': '2023-06-01' },
-    body: JSON.stringify({ model: CLAUDE_MODEL, max_tokens: 250, system: SYSTEM_PROMPT, messages: [{ role: 'user', content: userText }] }),
+    body: JSON.stringify({ model: CLAUDE_MODEL, max_tokens: 1024, system, messages: [{ role: 'user', content: userText }] }),
   });
   const j = await r.json();
   if (j.error) throw new Error(j.error.message || 'Claude error');
   const text = (j.content || []).filter(b => b.type === 'text').map(b => b.text).join('');
-  const m = text.match(/<en>([\s\S]*?)<\/en>/i);
-  // Only accept the tagged answer; untagged text is the model explaining, which must never reach viewers.
-  return (m ? m[1] : (text.length < 160 && !/translat|hindi|\n/i.test(text) ? text : '')).replace(/^["\s]+|["\s]+$/g, '').trim();
+  let out;
+  if (!tagged) out = text.split('\n')[0];
+  else {
+    const m = text.match(/<en>([\s\S]*?)(<\/en>|$)/i);   // a missing closing tag (cut-off reply) still counts
+    // Untagged text is the model explaining, which must never reach viewers.
+    out = m ? m[1] : (text.length < 160 && !/translat|hindi|\n/i.test(text) ? text : '');
+  }
+  out = out.replace(/<\/?en>/gi, '').replace(/^["\s]+|["\s]+$/g, '').trim();
+  if (!out) console.error(`Empty translation (stop: ${j.stop_reason}): ${JSON.stringify(text.slice(0, 200))}`);
+  return out;
 }
+
+const PLAIN_PROMPT = 'Translate the spoken Hindi (possibly garbled speech recognition, possibly English words written in Hindi script) ' +
+  'into short, natural English. Give your best guess even if it is unclear. Output only the English, on one line.';
 
 async function claudeTranslate(hi, context, contextEn) {
   const ctx = context.map((h, i) => `${h} => ${contextEn[i] || ''}`).join('\n');
   let en = await callClaude(`Earlier lines (Hindi => English already shown):\n${ctx || '(none)'}\n\nTranslate this line:\n${hi}`);
   if (!en) en = await callClaude(`Translate this line:\n${hi}`);   // retry once without context
+  if (!en) en = await callClaude(hi, PLAIN_PROMPT, false);          // last resort: plain answer, no tags
   return en;
 }
 
