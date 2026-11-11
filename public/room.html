@@ -57,7 +57,10 @@
     <b id="title">English translation</b>
     <span id="state"><span class="live-tag"><span class="dot" id="dot"></span><span id="stateText">Connecting...</span></span></span>
   </div>
-  <button class="btn ghost settings-btn" id="gear">Settings</button>
+  <div class="row" style="gap:8px; flex-wrap:nowrap">
+    <button class="btn small ghost hidden" id="delayTag" style="color:var(--warn)"></button>
+    <button class="btn ghost settings-btn" id="gear">Settings</button>
+  </div>
 </header>
 
 <div class="wrap">
@@ -120,6 +123,9 @@ let delay = store.get('lt-delay', 0), size = store.get('lt-size', 34);
 // ---------- settings (big +/- buttons) ----------
 function applySettings() {
   $('#feed').style.setProperty('--fs', size + 'px');
+  // A delay is easy to forget (it is remembered between visits), so always show it when on.
+  $('#delayTag').classList.toggle('hidden', !delay);
+  $('#delayTag').innerHTML = '&#9201; ' + delay + ' s delay';
   $('#szVal').textContent = size <= 28 ? 'Normal' : size <= 36 ? 'Large' : size <= 44 ? 'Larger' : 'Largest';
   $('#rtVal').textContent = voice.rate <= 0.8 ? 'Slow' : voice.rate <= 0.95 ? 'Calm' : voice.rate <= 1.1 ? 'Normal' : 'Fast';
   $('#dlVal').textContent = delay ? delay + ' seconds' : 'No delay';
@@ -133,6 +139,7 @@ $('#dlDown').onclick = () => { delay = Math.max(0, delay - 5); applySettings(); 
 $('#dlUp').onclick = () => { delay = Math.min(60, delay + 5); applySettings(); };
 $('#hiBox').onchange = () => document.body.classList.toggle('show-hi', $('#hiBox').checked);
 $('#gear').onclick = () => $('#panel').classList.add('open');
+$('#delayTag').onclick = () => { $('#panel').classList.add('open'); $('#dlDown').scrollIntoView({ block: 'center' }); };
 $('#closePanel').onclick = () => $('#panel').classList.remove('open');
 $('#dl').onclick = () => download(`transcript-${code}.txt`, transcriptText(shown, info.title));
 applySettings();

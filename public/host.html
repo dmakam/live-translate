@@ -257,10 +257,7 @@ function connect() {
   ws.onmessage = (e) => {
     const m = JSON.parse(e.data);
     if (m.type === 'stats') $('#count').textContent = m.listeners;
-    if (m.type === 'stt' && scribe.on) {
-      if (m.final !== undefined) { scribe.chunker.update(m.final, true); showInterim(''); }
-      else showInterim(scribe.chunker.update(m.partial, false));
-    }
+    if (m.type === 'stt' && scribe.on) onScribe(m);
     if (m.type === 'stt-ready') setRecog('ElevenLabs Scribe (high accuracy)');
     if (m.type === 'stt-error' && scribe.on) fallbackToChrome(m.error);
     if (m.type === 'hello' && !m.isHost) setStatus('This organiser link is not valid any more.', 'bad');
@@ -305,7 +302,27 @@ $('#useMic').onclick = () => {
 const scribe = { on: false, chunker: null, pcm: null };
 const setRecog = (t) => { $('#recogLine').textContent = t ? 'Speech recognition: ' + t : ''; };
 function showInterim(t) { $('#interim').textContent = t ? '\u2026 ' + t : ''; if (t) sendWs({ type: 'interim', hi: t }); }
+// Scribe ends a segment at any short pause, often mid-sentence ("...chizen" | "hain. aur dekho").
+// A segment without a full stop is carried into the next one, so sentences stay whole;
+// if the speaker really stops, it is released after 2.5 s.
+const SENT_END = /[\u0964\u0965.?!]["')]*\s*$/;
+function onScribe(m) {
+  clearTimeout(scribe.carryTimer);
+  const join = (t) => (scribe.carry ? scribe.carry + ' ' : '') + (t || '');
+  if (m.final !== undefined) {
+    const text = join(m.final).trim();
+    if (!text) return;
+    if (SENT_END.test(text)) { scribe.carry = ''; scribe.chunker.update(text, true); showInterim(''); }
+    else {
+      scribe.carry = text;
+      showInterim(scribe.chunker.update(text, false));
+      scribe.carryTimer = setTimeout(() => { if (scribe.carry) { scribe.chunker.update(scribe.carry, true); scribe.carry = ''; showInterim(''); } }, 2500);
+    }
+  } else showInterim(scribe.chunker.update(join(m.partial), false));
+}
+
 async function startScribe(stream) {
+  scribe.carry = '';
   scribe.on = true;
   scribe.chunker = new Chunker(onFinal);
   scribe.pcm = new PcmStreamer();

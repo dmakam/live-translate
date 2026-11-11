@@ -24,7 +24,7 @@ const DEFAULT_VOICE = process.env.TTS_VOICE || (EL_ON ? 'el:' + EL_VOICE : 'bm_g
 const VOICE_ID_RE = /^([a-z]{2}_[a-z]+|el:[A-Za-z0-9]{8,40})$/;
 // Speech recognition: ElevenLabs Scribe v2 Realtime when a key is set (STT=chrome turns it off).
 const STT_ON = Boolean(EL_KEY) && process.env.STT !== 'chrome';
-const STT_KEYTERMS = (process.env.STT_KEYTERMS || 'Dharma,samskara,samskaras,karma,Heartfulness,Daaji,Mathura,meditation,Pranahuti,spirituality')
+const STT_KEYTERMS = (process.env.STT_KEYTERMS || 'Dharma,samskara,samskaras,karma,Heartfulness,Daaji,Mathura,meditation,Pranahuti,spirituality,Pramadam,Yudhishthira,Yaksha,Mahabharata,Dharmaputra,Gurudev')
   .split(',').map(t => t.trim()).filter(Boolean).slice(0, 50);
 
 // Guardrails so a public proof of concept can't run up a bill
@@ -161,7 +161,14 @@ async function callClaude(userText, system = SYSTEM_PROMPT, tagged = true) {
 const PLAIN_PROMPT = 'Translate the spoken Hindi (possibly garbled speech recognition, possibly English words written in Hindi script) ' +
   'into short, natural English. Give your best guess even if it is unclear. Output only the English, on one line.';
 
+// Recognisers sometimes write a Hindi word in English letters; fix the known ones before translating.
+function fixLatinHindi(t) {
+  const DEV = '[\\u0900-\\u097F]';
+  return String(t || '').replace(new RegExp('(' + DEV + '[^\\sA-Za-z]*\\s+)bus(?=\\s+' + DEV + ')', 'gi'), '$1\u092c\u0938');
+}
+
 async function claudeTranslate(hi, context, contextEn) {
+  hi = fixLatinHindi(hi);
   const ctx = context.map((h, i) => `${h} => ${contextEn[i] || ''}`).join('\n');
   let en = await callClaude(`Earlier lines (Hindi => English already shown):\n${ctx || '(none)'}\n\nTranslate this line:\n${hi}`);
   if (!en) en = await callClaude(`Translate this line:\n${hi}`);   // retry once without context
