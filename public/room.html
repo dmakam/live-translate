@@ -212,6 +212,8 @@ function render(line, speak) {
     if (voice.ai) {
       const url = audioById.get(line.id);
       if (url) voice.playAudio(url, line.en); else waitingAudio.set(line.id, { t: Date.now(), text: line.en });
+      // speech covers whole sentences, so most chunk ids never get audio; forget old ones
+      for (const [k, v] of waitingAudio) if (Date.now() - v.t > 30000) waitingAudio.delete(k);
     } else voice.say(line.en);
   }
 }

@@ -120,6 +120,8 @@ const SYSTEM_PROMPT =
   'Speech is cut into chunks at fixed lengths, so the line may be a fragment that starts or ends mid-sentence. ' +
   'Translate exactly what the fragment says, so it reads as a natural continuation of the previous English line. ' +
   'Do not complete the thought, and do not repeat what the previous English already said.\n' +
+  'If the line ends mid-sentence, end your English with NO final punctuation; put a full stop, question mark or ' +
+  'exclamation mark only when the sentence is really complete.\n' +
   'Keep names, Sanskrit terms and English words as spoken.\n' +
   'Reply with ONLY <en>the English</en>. Never explain, never comment, never ask questions, never leave it empty: ' +
   'even for a filler word or a line that repeats an earlier one, give the closest short English (for example <en>and then</en>).';
@@ -159,18 +161,18 @@ async function checkTts() {
 }
 checkTts(); setInterval(checkTts, 30e3);
 
-async function elevenSpeak(text, voiceId) {
+async function elevenSpeak(text, voiceId, previousText) {
   const r = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(voiceId)}?output_format=mp3_44100_128`, {
     method: 'POST', headers: { 'Content-Type': 'application/json', 'xi-api-key': EL_KEY, Accept: 'audio/mpeg' },
-    body: JSON.stringify({ text, model_id: EL_MODEL }), signal: AbortSignal.timeout(30000),
+    body: JSON.stringify({ text, model_id: EL_MODEL, ...(previousText ? { previous_text: previousText.slice(-300) } : {}) }), signal: AbortSignal.timeout(30000),
   });
   if (!r.ok) throw new Error('elevenlabs ' + r.status + ' ' + (await r.text()).slice(0, 160));
   return Buffer.from(await r.arrayBuffer());
 }
 
-async function ttsSpeak(text, voice) {
+async function ttsSpeak(text, voice, previousText) {
   if (voice && voice.startsWith('el:')) {
-    try { return await elevenSpeak(text, voice.slice(3)); }
+    try { return await elevenSpeak(text, voice.slice(3), previousText); }
     catch (e) {
       console.error('ElevenLabs failed, using the free voice for this line:', e.message);
       if (!TTS_URL) throw e;
@@ -190,6 +192,28 @@ async function ttsSpeak(text, voice) {
 const audioStore = new Map();   // id -> Buffer
 const ttsQueue = [];
 let ttsBusy = false;
+// Subtitles go out chunk by chunk, but speech waits for a whole English sentence, so the
+// voice never stops mid-sentence. A short pause from the speaker also releases it.
+const SENTENCE_END = /[.!?\u0964]["')\]]*\s*$/;
+function addSpeech(room, line) {
+  if (!tts.ready || !line.en) return;
+  const sp = room.speech || (room.speech = { parts: [], firstAt: 0, lastId: null, timer: null });
+  if (!sp.parts.length) sp.firstAt = Date.now();
+  sp.parts.push(line.en.trim()); sp.lastId = line.id;
+  clearTimeout(sp.timer);
+  const text = sp.parts.join(' ');
+  if (SENTENCE_END.test(text) || text.length > 240 || Date.now() - sp.firstAt > 9000) flushSpeech(room);
+  else sp.timer = setTimeout(() => flushSpeech(room), 2500);   // speaker paused: say what we have
+}
+function flushSpeech(room) {
+  const sp = room.speech;
+  if (!sp || !sp.parts.length) return;
+  clearTimeout(sp.timer);
+  const en = sp.parts.join(' ').replace(/\s+/g, ' ').trim();
+  sp.parts = [];
+  queueRoomAudio(room, { id: sp.lastId, en });
+}
+
 function queueRoomAudio(room, line) {
   if (!tts.ready || !line.en) return;
   ttsQueue.push({ room, line });
@@ -202,7 +226,8 @@ async function runTts() {
   if (!job) return;
   ttsBusy = true;
   try {
-    const buf = await ttsSpeak(job.line.en, job.room.voice || DEFAULT_VOICE);
+    const buf = await ttsSpeak(job.line.en, job.room.voice || DEFAULT_VOICE, job.room.lastSpoken);
+    job.room.lastSpoken = job.line.en;
     audioStore.set(job.line.id, buf);
     while (audioStore.size > 400) audioStore.delete(audioStore.keys().next().value);
     toListeners(job.room, { type: 'audio', id: job.line.id, url: '/audio/' + job.line.id + '.mp3' });
@@ -367,7 +392,7 @@ wss.on('connection', (ws, req) => {
       room.history.push(line);
       if (room.history.length > LIMITS.historyLines) room.history.shift();
       toListeners(room, { type: 'final', line });
-      queueRoomAudio(room, line);
+      addSpeech(room, line);
     } else if (m.type === 'voice' && VOICE_ID_RE.test(m.voice || '')) {
       room.voice = m.voice; saveRooms();
     } else if (m.type === 'clear') {
