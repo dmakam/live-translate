@@ -107,11 +107,17 @@ import { $, ReadAloud, voicePicker, transcriptText, download } from '/js/common.
 const code = location.pathname.split('/').pop().toUpperCase();
 const voice = new ReadAloud();
 let pickerReady = false;
+// Tell the server which natural voice this listener hears, so it only makes audio people use.
+let sock = null;
+function sendListen() {
+  if (sock?.readyState === 1) sock.send(JSON.stringify({ type: 'listen', voice: voice.on && voice.ai ? voice.ai.voice : null }));
+}
+voice.onAI = () => { audioById.clear(); sendListen(); };
 const audioById = new Map(), waitingAudio = new Map();   // natural voice: line id -> mp3 url / render time
 function setupPicker(m) {
   if (pickerReady) return; pickerReady = true;
   // The organiser's natural voice is made once on the server for everyone; device voices are the backup.
-  voicePicker($('#voice'), $('#vtest'), null, voice, m.naturalVoice ? [{ id: m.voice, label: 'Natural voice' }] : null);
+  voicePicker($('#voice'), $('#vtest'), null, voice, m.naturalVoice ? (m.voices || [{ id: m.voice, label: 'Natural voice' }]) : null);
 }
 const store = { get: (k, d) => { try { const v = localStorage.getItem(k); return v === null ? d : JSON.parse(v); } catch { return d; } },
                 set: (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} } };
@@ -152,7 +158,7 @@ function listenLabel() {
 const isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 let heard = false;
 $('#listen').onclick = () => {
-  voice.toggle(); listenLabel();
+  voice.toggle(); listenLabel(); sendListen();
   heard = false;
   // If nothing has been spoken a few seconds after turning sound on, show phone-specific help.
   if (voice.on) setTimeout(() => { if (voice.on && !heard) $('#soundHelp').classList.remove('hidden'); }, 4000);
@@ -247,7 +253,8 @@ setInterval(() => {
 }, 200);
 
 function connect() {
-  const ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws?room=${code}`);
+  const ws = sock = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws?room=${code}`);
+  ws.addEventListener('open', sendListen);
   ws.onmessage = (e) => {
     const m = JSON.parse(e.data);
     if (m.type === 'hello') {

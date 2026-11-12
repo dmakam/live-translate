@@ -76,6 +76,9 @@ Add to `.env`, then run `bash deploy.sh`:
     ELEVENLABS_API_KEY=...            # from elevenlabs.io > Developers > API keys
     ELEVENLABS_VOICE_ID=...           # the voice's ID from the ElevenLabs Voice Library
     ELEVENLABS_VOICE_NAME=Aaditya     # how it is labelled for organisers
+    ELEVENLABS_API_KEY_2=...          # optional 2nd voice listeners can choose (own account allowed)
+    ELEVENLABS_VOICE_ID_2=...
+    ELEVENLABS_VOICE_NAME_2=...
 
 It becomes the default voice for new events and is listed first. If a request fails, that line is
 spoken in the free voice instead. Billing is per character; each line is voiced once per event

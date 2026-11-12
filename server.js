@@ -16,14 +16,30 @@ const CLAUDE_MODEL = process.env.CLAUDE_MODEL || 'claude-haiku-5-5';
 const TTS_URL = process.env.TTS_URL || '';           // e.g. http://live-translate-tts:8000 (natural AI voice)
 // Optional premium voice: ElevenLabs. Set ELEVENLABS_API_KEY and ELEVENLABS_VOICE_ID in .env.
 const EL_KEY = process.env.ELEVENLABS_API_KEY || '';
-const EL_VOICE = process.env.ELEVENLABS_VOICE_ID || '';
-const EL_NAME = process.env.ELEVENLABS_VOICE_NAME || 'Premium Indian voice';
+// Up to 3 ElevenLabs voices, each may use its own account key (_2/_3 fall back to the first key).
+const EL_VOICES = [1, 2, 3].map((n) => {
+  const s = n === 1 ? '' : '_' + n;
+  return { key: process.env['ELEVENLABS_API_KEY' + s] || EL_KEY, voice: process.env['ELEVENLABS_VOICE_ID' + s] || '',
+           name: process.env['ELEVENLABS_VOICE_NAME' + s] || (n === 1 ? 'Premium Indian voice' : 'Voice ' + n) };
+}).filter((v) => v.key && v.voice);
+const EL_VOICE = EL_VOICES[0]?.voice || '';
+const EL_LIST = EL_VOICES.map((v) => ({ id: 'el:' + v.voice, label: v.name + ' \u00b7 ElevenLabs', name: v.name }));
 const EL_MODEL = process.env.ELEVENLABS_MODEL || 'eleven_flash_v2_5';
-const EL_ON = Boolean(EL_KEY && EL_VOICE);
+const EL_ON = EL_VOICES.length > 0;
 const DEFAULT_VOICE = process.env.TTS_VOICE || (EL_ON ? 'el:' + EL_VOICE : 'bm_george');
 const VOICE_ID_RE = /^([a-z]{2}_[a-z]+|el:[A-Za-z0-9]{8,40})$/;
 // Rooms remember the voice they were made with; an old ElevenLabs ID follows the one in .env now.
-const roomVoice = (r) => { const v = r.voice || DEFAULT_VOICE; return v.startsWith('el:') ? (EL_ON ? 'el:' + EL_VOICE : DEFAULT_VOICE) : v; };
+const roomVoice = (r) => {
+  const v = r.voice || DEFAULT_VOICE;
+  if (!v.startsWith('el:')) return v;
+  return EL_LIST.some((x) => x.id === v) ? v : (EL_ON ? EL_LIST[0].id : DEFAULT_VOICE);
+};
+// Voices a listener can choose: the organiser's voice first, then the other ElevenLabs voices.
+function listenerVoices(r) {
+  const main = roomVoice(r);
+  const label = (id) => EL_LIST.find((x) => x.id === id)?.name || 'Natural voice';
+  return [main, ...EL_LIST.map((x) => x.id).filter((id) => id !== main)].map((id) => ({ id, label: label(id) }));
+}
 // Speech recognition: ElevenLabs Scribe v2 Realtime when a key is set (STT=chrome turns it off).
 const STT_ON = Boolean(EL_KEY) && process.env.STT !== 'chrome';
 const STT_KEYTERMS = (process.env.STT_KEYTERMS || 'Dharma,samskara,samskaras,karma,Heartfulness,Daaji,Mathura,meditation,Pranahuti,spirituality,Pramadam,Yudhishthira,Yaksha,Mahabharata,Dharmaputra,Gurudev')
@@ -100,7 +116,7 @@ function sweepRooms() {
 }
 setInterval(sweepRooms, 60e3);
 
-const publicRoom = (r) => ({ code: r.code, title: r.title, startsAt: r.startsAt || null, live: !!r.live, expiresAt: r.expiresAt, voice: roomVoice(r), naturalVoice: tts.ready });
+const publicRoom = (r) => ({ code: r.code, title: r.title, startsAt: r.startsAt || null, live: !!r.live, expiresAt: r.expiresAt, voice: roomVoice(r), voices: listenerVoices(r), naturalVoice: tts.ready });
 
 // ---------- translation ----------
 const ipHits = new Map(); // ip -> [timestamps]
@@ -179,7 +195,7 @@ async function claudeTranslate(hi, context, contextEn) {
 }
 
 // ---------- natural voice (Kokoro service) ----------
-const tts = { ready: EL_ON, voices: EL_ON ? [{ id: 'el:' + EL_VOICE, label: EL_NAME + ' \u00b7 ElevenLabs' }] : [] };
+const tts = { ready: EL_ON, voices: EL_LIST.map(({ id, label }) => ({ id, label })) };
 async function checkTts() {
   if (!TTS_URL) return;
   try {
@@ -187,14 +203,15 @@ async function checkTts() {
     if (!tts.ready && j.ok) console.log(`Natural voice service: self-test ${j.self_test}x real time - ${j.fast_enough === false ? 'too slow, using device voices' : 'in use'}`);
     const kokoroOk = !!j.ok && j.fast_enough !== false;
     tts.ready = EL_ON || kokoroOk; tts.selfTest = j.self_test;
-    tts.voices = [...(EL_ON ? [{ id: 'el:' + EL_VOICE, label: EL_NAME + ' \u00b7 ElevenLabs' }] : []), ...(kokoroOk ? j.voices || [] : [])];
+    tts.voices = [...EL_LIST.map(({ id, label }) => ({ id, label })), ...(kokoroOk ? j.voices || [] : [])];
   } catch { if (tts.ready && !EL_ON) console.error('Natural voice service not reachable'); tts.ready = EL_ON; tts.voices = EL_ON ? tts.voices.filter(v => v.id.startsWith('el:')) : []; }
 }
 checkTts(); setInterval(checkTts, 30e3);
 
 async function elevenSpeak(text, voiceId, previousText) {
-  const r = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(voiceId)}?output_format=mp3_44100_128`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json', 'xi-api-key': EL_KEY, Accept: 'audio/mpeg' },
+  const key = EL_VOICES.find((v) => v.voice === voiceId)?.key || EL_KEY;
+  const r = await fetch(`${process.env.ELEVENLABS_BASE || 'https://api.elevenlabs.io'}/v1/text-to-speech/${encodeURIComponent(voiceId)}?output_format=mp3_44100_128`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', 'xi-api-key': key, Accept: 'audio/mpeg' },
     body: JSON.stringify({ text, model_id: EL_MODEL, ...(previousText ? { previous_text: previousText.slice(-300) } : {}) }), signal: AbortSignal.timeout(30000),
   });
   if (!r.ok) throw new Error('elevenlabs ' + r.status + ' ' + (await r.text()).slice(0, 160));
@@ -259,13 +276,24 @@ async function runTts() {
   const job = ttsQueue.shift();
   if (!job) return;
   ttsBusy = true;
-  try {
-    const buf = await ttsSpeak(job.line.en, roomVoice(job.room), job.room.lastSpoken);
-    job.room.lastSpoken = job.line.en;
-    audioStore.set(job.line.id, buf);
-    while (audioStore.size > 400) audioStore.delete(audioStore.keys().next().value);
-    toListeners(job.room, { type: 'audio', id: job.line.id, url: '/audio/' + job.line.id + '.mp3' });
-  } catch (e) { console.error('voice:', e.message); }
+  // Only voices someone is listening to are made, in parallel; each listener gets their own.
+  const byVoice = new Map();
+  for (const c of job.room.clients) {
+    if (c.isHost || c.readyState !== 1) continue;
+    const v = c.listenVoice === undefined ? roomVoice(job.room) : c.listenVoice;   // undefined = older page
+    if (v) (byVoice.get(v) || byVoice.set(v, []).get(v)).push(c);
+  }
+  await Promise.all([...byVoice].map(async ([v, socks]) => {
+    try {
+      const buf = await ttsSpeak(job.line.en, v, job.room.lastSpoken);
+      const aid = job.line.id + 'v' + Math.max(0, tts.voices.findIndex((x) => x.id === v));
+      audioStore.set(aid, buf);
+      while (audioStore.size > 400) audioStore.delete(audioStore.keys().next().value);
+      const msg = JSON.stringify({ type: 'audio', id: job.line.id, url: '/audio/' + aid + '.mp3' });
+      for (const c of socks) if (c.readyState === 1) c.send(msg);
+    } catch (e) { console.error('voice:', e.message); }
+  }));
+  job.room.lastSpoken = job.line.en;
   ttsBusy = false;
   runTts();
 }
@@ -459,7 +487,13 @@ wss.on('connection', (ws, req) => {
   stats(room);
 
   ws.on('message', (raw, isBinary) => {
-    if (!ws.isHost) return;
+    if (!ws.isHost) {
+      // a listener says which voice they hear (null = sound off / device voice)
+      if (isBinary) return;
+      let m; try { m = JSON.parse(raw); } catch { return; }
+      if (m.type === 'listen') ws.listenVoice = tts.voices.some((v) => v.id === m.voice) ? m.voice : null;
+      return;
+    }
     if (isBinary) return sttAudio(room, raw);          // organiser's audio for speech recognition
     let m; try { m = JSON.parse(raw); } catch { return; }
     if (m.type === 'stt-start') { if (STT_ON) startStt(room, ws); else send(ws, { type: 'stt-error', error: 'not configured' }); return; }

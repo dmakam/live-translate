@@ -371,6 +371,7 @@ export class ReadAloud {
   useAI(voice) {          // voice id, or null for the device voice
     this.ai = voice ? { voice } : null;
     try { localStorage.setItem('lt-ai', voice || 'off'); } catch {}
+    this.onAI?.();
   }
   aiUrl(text) { return '/api/tts?voice=' + encodeURIComponent(this.ai.voice) + '&text=' + encodeURIComponent(text); }
   // room pages pass the server's ready-made audio for a line
