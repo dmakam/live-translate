@@ -292,9 +292,10 @@ export class AIPlayer {
     this.el.onerror = () => { const it = this.cur; this.playing = false; if (it && it.url !== SILENT_MP3) this.onFail?.(it.text); this._next(); };
   }
   unlock() { this.el.src = SILENT_MP3; this.el.play().catch(() => {}); }
-  // Every line is spoken. When lines are waiting, speech speeds up gently to catch up;
-  // only if more than three are waiting is the oldest skipped.
-  catchUp() { const n = this.queue.length; return Math.min(this.rate * (n >= 2 ? 1.3 : n === 1 ? 1.15 : 1), 1.7); }
+  // Every line is spoken. When lines are waiting, the NEXT sentence is a little faster to
+  // catch up; the speed never changes in the middle of a sentence (that sounded like a jerk).
+  // Only if more than three are waiting is the oldest skipped.
+  catchUp() { const n = this.queue.length; return Math.min(this.rate * (n >= 2 ? 1.2 : n === 1 ? 1.08 : 1), 1.6); }
   play(url, text) {
     const it = { url, text };
     // Download the clip now, while the current one is still playing, so the next sentence
@@ -305,7 +306,6 @@ export class AIPlayer {
     this.queue.push(it);
     while (this.queue.length > 3) this._drop(this.queue.shift());
     if (!this.playing) this._next();
-    else this.el.playbackRate = this.catchUp();
   }
   _drop(it) { if (it?.blob) setTimeout(() => URL.revokeObjectURL(it.blob), 1000); }
   async _next() {
@@ -315,7 +315,9 @@ export class AIPlayer {
     if (it.ready && !it.blob) await Promise.race([it.ready, new Promise((r) => setTimeout(r, 4000))]);
     if (this.cur) this._drop(this.cur);
     this.cur = it;
-    this.el.src = it.blob || it.url; this.el.playbackRate = this.catchUp();
+    const rate = this.catchUp();
+    this.el.defaultPlaybackRate = rate;   // loading a new clip resets playbackRate to this
+    this.el.src = it.blob || it.url; this.el.playbackRate = rate;
     this.el.play().catch(() => { this.playing = false; this.onFail?.(it.text); this._next(); });
   }
   stop() { this.queue = []; this.playing = false; try { this.el.pause(); } catch {} }
