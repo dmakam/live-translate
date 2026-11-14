@@ -49,6 +49,7 @@
   .toggle { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 17px; font-weight: 600; }
   .toggle input { width: 26px; height: 26px; accent-color: var(--acc); }
   .paused { color: var(--warn); }
+  #listen.pulse { animation: pulse 1.6s infinite; }
 
   /* event video (muted), beside the English on computers, above it on phones */
   .side { display: flex; flex-direction: column; gap: 16px; min-height: 0; }
@@ -254,9 +255,34 @@ function listenLabel() {
   $('#listen').classList.toggle('on', voice.on);
   $('#listen').innerHTML = voice.on ? '&#128266; English sound is ON &middot; tap to stop' : '&#128264; Tap to hear English';
 }
+// ---------- automatic update after a deploy ----------
+let pageBuild = null, reloading = false;
+function reloadForUpdate() {
+  if (reloading) return;
+  reloading = true;
+  try { sessionStorage.setItem('lt-resume', JSON.stringify({ sound: voice.on })); } catch {}
+  // spread the reloads over a few seconds so hundreds of listeners don't all hit the server at once
+  setTimeout(() => location.reload(), 500 + Math.random() * 6000);
+}
+// After an update reload, switch the English sound back on if the browser allows it without a tap;
+// otherwise the big button asks for one tap.
+(function resumeAfterUpdate() {
+  let r = null;
+  try { r = JSON.parse(sessionStorage.getItem('lt-resume') || 'null'); sessionStorage.removeItem('lt-resume'); } catch {}
+  if (!r?.sound) return;
+  const el = voice.player.el;
+  el.muted = false;
+  el.src = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YQAAAAA=';
+  el.play().then(() => { if (!voice.on) { voice.toggle(); listenLabel(); sendListen(); } })
+    .catch(() => {
+      $('#listen').innerHTML = '&#128264; The page was updated &middot; tap to hear English again';
+      $('#listen').classList.add('pulse');
+    });
+})();
 const isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 let heard = false;
 $('#listen').onclick = () => {
+  $('#listen').classList.remove('pulse');
   voice.toggle(); listenLabel(); sendListen();
   if (vid.srcObject) vid.play().catch(() => {});   // phones need a tap before video plays
   heard = false;
@@ -359,6 +385,8 @@ function connect() {
     const m = JSON.parse(e.data);
     if (m.type === 'video') setVideo(m.url);
     if (m.type === 'hello') {
+      if (!pageBuild) pageBuild = m.build;
+      else if (m.build && m.build !== pageBuild) return reloadForUpdate();
       setVideo(m.video);
       setupPicker(m);
       info = { title: m.title, startsAt: m.startsAt, live: m.live };

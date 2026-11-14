@@ -63,6 +63,18 @@ const LIMITS = {
 };
 
 const PUBLIC = path.join(__dirname, 'public');
+// Fingerprint of the web pages. After a deploy that changes them, open listener pages see a
+// new value when they reconnect and reload themselves (a server-only change does not reload them).
+const BUILD = (() => {
+  const h = crypto.createHash('sha1');
+  const walk = (d) => fs.readdirSync(d, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name)).forEach((e) => {
+    const f = path.join(d, e.name);
+    if (e.isDirectory()) walk(f); else h.update(e.name).update(fs.readFileSync(f));
+  });
+  try { walk(PUBLIC); } catch {}
+  return h.digest('hex').slice(0, 12);
+})();
+console.log('Web build', BUILD);
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml' };
 const ROUTES = { '/': 'index.html', '/host': 'host.html', '/solo': 'solo.html', '/test': 'test.html' };
 
@@ -509,7 +521,7 @@ wss.on('connection', (ws, req) => {
   ws.isHost = q.get('host') === room.hostToken;
   room.clients.add(ws);
 
-  send(ws, { type: 'hello', ...publicRoom(room), history: room.history, interim: room.interim, isHost: ws.isHost });
+  send(ws, { type: 'hello', build: BUILD, ...publicRoom(room), history: room.history, interim: room.interim, isHost: ws.isHost });
   stats(room);
 
   ws.on('message', (raw, isBinary) => {
