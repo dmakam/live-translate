@@ -55,7 +55,17 @@
   .side > .panel { flex: 1 1 auto; min-height: 0; overflow-y: auto; }   /* video stays put, settings scroll */
   .vbox { flex: none; }
   .vbox { display: none; }
-  body[data-video="small"] .vbox, body[data-video="medium"] .vbox { display: block; }
+  body[data-video="small"] .vbox, body[data-video="medium"] .vbox, body[data-video="large"] .vbox { display: block; }
+  /* Large: the video across the top, the English underneath, settings stay on the right */
+  @media (min-width: 901px) {
+    body[data-video="large"] .side { display: contents; }
+    body[data-video="large"] .wrap { grid-template-rows: auto minmax(0, 1fr); row-gap: 14px; }
+    body[data-video="large"] .vbox { grid-column: 1; grid-row: 1; }
+    body[data-video="large"] #feed { grid-column: 1; grid-row: 2; padding-bottom: 120px; }
+    body[data-video="large"] .side > .panel { grid-column: 2; grid-row: 1 / span 2; }
+    body[data-video="large"] .vframe { width: min(100%, calc(50vh * 16 / 9)); margin: 0 auto; }
+    body[data-video="large"] .vnote { text-align: center; }
+  }
   body[data-video="medium"] .wrap { grid-template-columns: minmax(0, 1fr) min(600px, 44vw); }
   .vframe { position: relative; aspect-ratio: 16 / 9; border-radius: 16px; overflow: hidden; background: #000;
     border: 1px solid var(--line); box-shadow: 0 18px 40px rgba(0, 0, 0, .45); }
@@ -64,7 +74,7 @@
   .vnote { font-size: 13px; color: var(--mute); margin-top: 6px; }
   @media (max-width: 900px) {
     .side { display: contents; }
-    body[data-video="small"] .wrap, body[data-video="medium"] .wrap { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); }
+    body[data-video="small"] .wrap, body[data-video="medium"] .wrap, body[data-video="large"] .wrap { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); }
     .vbox { order: -1; }
     body[data-video="small"] .vbox { width: 55%; margin-left: auto; }
   }
@@ -93,6 +103,10 @@
   <aside class="card panel" id="panel">
     <div class="set">
       <div>
+      <div class="hidden" id="videoSet">
+        <p class="label">Video</p>
+        <div class="stepper"><button id="vsDown" aria-label="Smaller video">&minus;</button><div class="val" id="vsVal"></div><button id="vsUp" aria-label="Bigger video">+</button></div>
+      </div>
         <p class="label">Text size</p>
         <div class="stepper"><button id="szDown" aria-label="Smaller text">A&minus;</button><div class="val" id="szVal"></div><button id="szUp" aria-label="Bigger text">A+</button></div>
       </div>
@@ -112,10 +126,6 @@
         <p class="label">English arrives too early?</p>
         <div class="stepper"><button id="dlDown" aria-label="Less delay">&minus;</button><div class="val" id="dlVal"></div><button id="dlUp" aria-label="More delay">+</button></div>
         <p class="help">Watching on YouTube? It runs behind live, so add a delay until the English matches the video.</p>
-      </div>
-      <div class="hidden" id="videoSet">
-        <p class="label">Video</p>
-        <div class="stepper"><button id="vsDown" aria-label="Smaller video">&minus;</button><div class="val" id="vsVal"></div><button id="vsUp" aria-label="Bigger video">+</button></div>
       </div>
       <label class="toggle">Show the Hindi too <input type="checkbox" id="hiBox"></label>
       <button class="btn small ghost" id="dl">&#11015; Save the transcript</button>
@@ -180,7 +190,7 @@ $('#dl').onclick = () => download(`transcript-${code}.txt`, transcriptText(shown
 applySettings();
 
 // ---------- event video: watched straight from Cloudflare (WebRTC), always muted ----------
-const VSIZES = ['off', 'small', 'medium'];
+const VSIZES = ['off', 'small', 'medium', 'large'];
 const VIDEO_DELAY_MS = 2500;   // hold the picture back a little so it lines up with the English
 let videoUrl = null, vsize = store.get('lt-video', 'small'), vpc = null, vretry = null, vtoken = 0;
 const vid = $('#vid');
@@ -230,8 +240,9 @@ async function openVideo() {
 function applyVideo() {
   document.body.dataset.video = wantVideo() ? vsize : 'off';
   $('#videoSet').classList.toggle('hidden', !videoUrl);
-  $('#vsVal').textContent = { off: 'Off', small: 'Small', medium: 'Medium' }[vsize];
+  $('#vsVal').textContent = { off: 'Off', small: 'Small', medium: 'Medium', large: 'Large' }[vsize];
   if (wantVideo()) { if (!vpc) openVideo(); } else closeVideo();   // Off: nothing is downloaded
+  requestAnimationFrame(() => { const f = $('#feed'); f.scrollTop = f.scrollHeight; });   // keep the newest line in view
 }
 function setVideo(url) { if ((url || null) === videoUrl) return; videoUrl = url || null; closeVideo(); applyVideo(); }
 $('#vsDown').onclick = () => { vsize = VSIZES[Math.max(0, VSIZES.indexOf(vsize) - 1)]; store.set('lt-video', vsize); applyVideo(); };
