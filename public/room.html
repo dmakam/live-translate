@@ -49,6 +49,25 @@
   .toggle { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 17px; font-weight: 600; }
   .toggle input { width: 26px; height: 26px; accent-color: var(--acc); }
   .paused { color: var(--warn); }
+
+  /* event video (muted), beside the English on computers, above it on phones */
+  .side { display: flex; flex-direction: column; gap: 16px; min-height: 0; }
+  .side > .panel { flex: 1 1 auto; min-height: 0; overflow-y: auto; }   /* video stays put, settings scroll */
+  .vbox { flex: none; }
+  .vbox { display: none; }
+  body[data-video="small"] .vbox, body[data-video="medium"] .vbox { display: block; }
+  body[data-video="medium"] .wrap { grid-template-columns: minmax(0, 1fr) min(600px, 44vw); }
+  .vframe { position: relative; aspect-ratio: 16 / 9; border-radius: 16px; overflow: hidden; background: #000;
+    border: 1px solid var(--line); box-shadow: 0 18px 40px rgba(0, 0, 0, .45); }
+  .vframe video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; background: #000; }
+  .vframe .vwait { position: absolute; inset: 0; display: grid; place-items: center; text-align: center; padding: 12px; color: #c9d1ff; font-size: 15px; }
+  .vnote { font-size: 13px; color: var(--mute); margin-top: 6px; }
+  @media (max-width: 900px) {
+    .side { display: contents; }
+    body[data-video="small"] .wrap, body[data-video="medium"] .wrap { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); }
+    .vbox { order: -1; }
+    body[data-video="small"] .vbox { width: 55%; margin-left: auto; }
+  }
 </style>
 </head>
 <body>
@@ -66,6 +85,11 @@
 <div class="wrap">
   <div class="subs" id="feed"></div>
 
+  <div class="side">
+  <div class="vbox" id="vbox">
+    <div class="vframe"><video id="vid" muted autoplay playsinline disablepictureinpicture></video><div class="vwait" id="vwait">Connecting the video...</div></div>
+    <div class="vnote">&#128263; Video sound is off &middot; you hear the English</div>
+  </div>
   <aside class="card panel" id="panel">
     <div class="set">
       <div>
@@ -89,11 +113,16 @@
         <div class="stepper"><button id="dlDown" aria-label="Less delay">&minus;</button><div class="val" id="dlVal"></div><button id="dlUp" aria-label="More delay">+</button></div>
         <p class="help">Watching on YouTube? It runs behind live, so add a delay until the English matches the video.</p>
       </div>
+      <div class="hidden" id="videoSet">
+        <p class="label">Video</p>
+        <div class="stepper"><button id="vsDown" aria-label="Smaller video">&minus;</button><div class="val" id="vsVal"></div><button id="vsUp" aria-label="Bigger video">+</button></div>
+      </div>
       <label class="toggle">Show the Hindi too <input type="checkbox" id="hiBox"></label>
       <button class="btn small ghost" id="dl">&#11015; Save the transcript</button>
       <button class="btn settings-btn" id="closePanel" style="justify-content:center">Done</button>
     </div>
   </aside>
+  </div>
 </div>
 
 <div id="soundHelp" class="notice hidden" style="position:fixed; left:12px; right:12px; bottom:96px; z-index:6; font-size:17px; background:#2a2210; display:flex; gap:12px; align-items:flex-start">
@@ -150,6 +179,65 @@ $('#closePanel').onclick = () => $('#panel').classList.remove('open');
 $('#dl').onclick = () => download(`transcript-${code}.txt`, transcriptText(shown, info.title));
 applySettings();
 
+// ---------- event video: watched straight from Cloudflare (WebRTC), always muted ----------
+const VSIZES = ['off', 'small', 'medium'];
+const VIDEO_DELAY_MS = 2500;   // hold the picture back a little so it lines up with the English
+let videoUrl = null, vsize = store.get('lt-video', 'small'), vpc = null, vretry = null, vtoken = 0;
+const vid = $('#vid');
+const keepMuted = () => { if (!vid.muted) vid.muted = true; if (vid.volume) vid.volume = 0; };
+vid.addEventListener('volumechange', keepMuted);
+const wantVideo = () => !!videoUrl && vsize !== 'off';
+function vwait(t) { $('#vwait').textContent = t || ''; $('#vwait').style.display = t ? '' : 'none'; }
+function closeVideo() {
+  clearTimeout(vretry); vtoken++;
+  if (vpc) { try { vpc.close(); } catch {} vpc = null; }
+  vid.srcObject = null;
+}
+function retryVideo(ms, msg) { vwait(msg); clearTimeout(vretry); vretry = setTimeout(() => { if (wantVideo()) openVideo(); }, ms); }
+async function openVideo() {
+  closeVideo();
+  const my = vtoken;
+  vwait('Connecting the video...');
+  try {
+    const pc = vpc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.cloudflare.com:3478' }], bundlePolicy: 'max-bundle' });
+    pc.addTransceiver('video', { direction: 'recvonly' });
+    pc.addTransceiver('audio', { direction: 'recvonly' });   // the video's own sound is never played
+    pc.ontrack = (e) => {
+      try { e.receiver.jitterBufferTarget = VIDEO_DELAY_MS; } catch {}
+      if (e.track.kind !== 'video') return;
+      vid.srcObject = new MediaStream([e.track]);   // picture only
+      keepMuted(); vid.play().catch(() => {});
+    };
+    pc.onconnectionstatechange = () => {
+      if (my !== vtoken) return;
+      if (pc.connectionState === 'connected') vwait('');
+      if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') retryVideo(3000, 'Reconnecting the video...');
+    };
+    await pc.setLocalDescription(await pc.createOffer());
+    await new Promise((r) => {
+      if (pc.iceGatheringState === 'complete') return r();
+      const t = setTimeout(r, 2000);
+      pc.addEventListener('icegatheringstatechange', () => { if (pc.iceGatheringState === 'complete') { clearTimeout(t); r(); } });
+    });
+    const r = await fetch(videoUrl, { method: 'POST', headers: { 'Content-Type': 'application/sdp' }, body: pc.localDescription.sdp });
+    if (my !== vtoken) return;
+    if (!r.ok) throw new Error('status ' + r.status);
+    await pc.setRemoteDescription({ type: 'answer', sdp: await r.text() });
+  } catch {
+    if (my === vtoken) retryVideo(5000, 'Waiting for the video...');
+  }
+}
+function applyVideo() {
+  document.body.dataset.video = wantVideo() ? vsize : 'off';
+  $('#videoSet').classList.toggle('hidden', !videoUrl);
+  $('#vsVal').textContent = { off: 'Off', small: 'Small', medium: 'Medium' }[vsize];
+  if (wantVideo()) { if (!vpc) openVideo(); } else closeVideo();   // Off: nothing is downloaded
+}
+function setVideo(url) { if ((url || null) === videoUrl) return; videoUrl = url || null; closeVideo(); applyVideo(); }
+$('#vsDown').onclick = () => { vsize = VSIZES[Math.max(0, VSIZES.indexOf(vsize) - 1)]; store.set('lt-video', vsize); applyVideo(); };
+$('#vsUp').onclick = () => { vsize = VSIZES[Math.min(VSIZES.length - 1, VSIZES.indexOf(vsize) + 1)]; store.set('lt-video', vsize); applyVideo(); };
+applyVideo();
+
 // ---------- listen button ----------
 function listenLabel() {
   $('#listen').classList.toggle('on', voice.on);
@@ -159,6 +247,7 @@ const isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent) || (navigator.platfo
 let heard = false;
 $('#listen').onclick = () => {
   voice.toggle(); listenLabel(); sendListen();
+  if (vid.srcObject) vid.play().catch(() => {});   // phones need a tap before video plays
   heard = false;
   // If nothing has been spoken a few seconds after turning sound on, show phone-specific help.
   if (voice.on) setTimeout(() => { if (voice.on && !heard) $('#soundHelp').classList.remove('hidden'); }, 4000);
@@ -257,7 +346,9 @@ function connect() {
   ws.addEventListener('open', sendListen);
   ws.onmessage = (e) => {
     const m = JSON.parse(e.data);
+    if (m.type === 'video') setVideo(m.url);
     if (m.type === 'hello') {
+      setVideo(m.video);
       setupPicker(m);
       info = { title: m.title, startsAt: m.startsAt, live: m.live };
       if (m.title) { $('#title').textContent = m.title; document.title = m.title + ' \u00b7 English'; }

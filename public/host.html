@@ -111,9 +111,11 @@
         </div>
         <div class="status" id="status" style="margin-top:12px; font-size:16px"><span class="dot" id="dot"></span><span id="statusText">Not started</span></div>
         <div class="muted" id="recogLine" style="font-size:14px; margin-top:4px"></div>
+        <div class="muted" id="videoMsg" style="font-size:14px; margin-top:4px"></div>
         <div class="row" style="margin-top:10px; gap:18px">
           <label class="muted" id="muteRow" style="font-size:15px; display:flex; gap:10px; align-items:center"><input type="checkbox" id="mute" style="width:20px;height:20px"> Mute the Hindi on this computer</label>
           <button class="linkish" id="useMic">Using a microphone instead?</button>
+          <label class="muted hidden" id="videoRow" style="font-size:15px; display:flex; gap:10px; align-items:center"><input type="checkbox" id="videoBox" checked style="width:20px;height:20px"> Show this tab&rsquo;s video to listeners (with its sound off)</label>
           <label class="muted" style="font-size:15px; display:flex; gap:10px; align-items:center"><input type="checkbox" id="recBox" style="width:20px;height:20px"> Save a recording of the Hindi audio (for checking quality)</label>
         </div>
         <div class="interim" id="interim"></div>
@@ -159,6 +161,7 @@ const sampleAudio = new Audio();
 getConfig().then(c => {
   cfg = c;
   $('#engine').textContent = c.claude ? 'Translation: Claude' : 'Translation: Chrome on-device';
+  if (c.video) $('#videoRow').classList.remove('hidden');
   if (c.tts?.ready) {
     $('#voiceField').classList.remove('hidden');
     $('#hvoice').innerHTML = c.tts.voices.map(v => `<option value="${v.id}">${v.label}</option>`).join('');
@@ -253,6 +256,7 @@ function connect() {
   ws.onopen = () => {
     if (rec?.running) sendWs({ type: 'status', live: true });
     if (rec?.running && scribe.on) sendWs({ type: 'stt-start' });   // reconnected: resume server recognition
+    if (vpc?.connectionState === 'connected') sendWs({ type: 'video-live', on: true });
   };
   ws.onmessage = (e) => {
     const m = JSON.parse(e.data);
@@ -260,6 +264,7 @@ function connect() {
     if (m.type === 'stt' && scribe.on) onScribe(m);
     if (m.type === 'stt-ready') setRecog('ElevenLabs Scribe (high accuracy)');
     if (m.type === 'stt-error' && scribe.on) fallbackToChrome(m.error);
+    if (m.type === 'video-publish' || m.type === 'video-error') videoReply?.(m);
     if (m.type === 'hello' && !m.isHost) setStatus('This organiser link is not valid any more.', 'bad');
     if (m.type === 'error' || m.type === 'closed') { setStatus('This event has ended or expired. Make a new one.', 'bad'); forget(room?.code); }
   };
@@ -296,6 +301,7 @@ $('#useMic').onclick = () => {
   $('#tabHint').innerHTML = source === 'mic' ? 'The microphone of this computer will be used. Place it close to the speaker or connect it to the sound desk.' :
     'Open the event in another tab of this browser first (YouTube, or Zoom using <b>&ldquo;Join from your browser&rdquo;</b>). Then press Start, choose that tab, and switch on <b>&ldquo;Also share tab audio&rdquo;</b>.';
   $('#muteRow').classList.toggle('hidden', source !== 'tab');
+  $('#videoRow').classList.toggle('hidden', source !== 'tab' || !cfg.video);
 };
 
 // ---------- recognition: ElevenLabs Scribe on the server, Chrome as backup ----------
@@ -353,7 +359,7 @@ $('#go').onclick = async () => {
       onFinal,
       onStatus: setStatus,
       onStop: () => {
-        stopScribe(); setRecog('');
+        stopScribe(); setRecog(''); stopVideo();
         stopRecording();
         stopMeter(); sendWs({ type: 'status', live: false });
         $('#go').classList.remove('live'); $('#go').innerHTML = '&#9679; Start translating';
@@ -368,6 +374,8 @@ $('#go').onclick = async () => {
     else setRecog('Chrome');
     stopMeter = attachMeter(stream, $('#meter'));
     startRecording(stream);
+    // The video goes straight to Cloudflare in the background; it never holds up the translation.
+    startVideo(stream).catch((e) => { stopVideo(); setVideoMsg('Video for listeners could not start: ' + e.message + '. The translation is not affected.', 'bad'); });
     if ($('#mute').checked) await applyMute();
     sendWs({ type: 'status', live: true });
     $('#go').classList.add('live'); $('#go').innerHTML = '&#9632; Pause';
@@ -379,6 +387,57 @@ $('#go').onclick = async () => {
     else setStatus(e.message, 'bad');
   }
 };
+
+// ---------- event video: the shared tab's picture goes to Cloudflare Stream; listeners watch from there ----------
+let vpc = null, vLocation = null, videoReply = null;
+function setVideoMsg(t, cls = '') { $('#videoMsg').textContent = t; $('#videoMsg').style.color = cls === 'ok' ? 'var(--ok, #6ee7b7)' : cls === 'bad' ? '#ff9fb0' : ''; }
+function askPublishUrl() {
+  return new Promise((resolve, reject) => {
+    const t = setTimeout(() => { videoReply = null; reject(new Error('no answer from the server')); }, 20000);
+    videoReply = (m) => { clearTimeout(t); videoReply = null; m.url ? resolve(m.url) : reject(new Error(m.error || 'refused')); };
+    sendWs({ type: 'video-start' });
+  });
+}
+async function startVideo(stream) {
+  const track = stream.getVideoTracks()[0];
+  if (!cfg.video || !$('#videoBox').checked || !track || source !== 'tab') return;
+  setVideoMsg('Starting the video for listeners...');
+  const url = await askPublishUrl();
+  track.contentHint = 'motion';
+  const h = track.getSettings().height || 720;
+  vpc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.cloudflare.com:3478' }], bundlePolicy: 'max-bundle' });
+  // At most 720p, 24 fps, 1.2 Mbit/s, sent at low priority so it never crowds out the audio.
+  vpc.addTransceiver(track, { direction: 'sendonly', sendEncodings: [{ maxBitrate: 1200000, maxFramerate: 24, scaleResolutionDownBy: Math.max(1, h / 720), priority: 'low', networkPriority: 'low' }] });
+  // Cloudflare's examples always publish audio with video, so the tab sound goes too (small, 32 kbit/s).
+  // Listeners never hear it: their player is muted and only shows the picture.
+  const at = stream.getAudioTracks()[0];
+  if (at) vpc.addTransceiver(at, { direction: 'sendonly', sendEncodings: [{ maxBitrate: 32000, priority: 'low' }] });
+  vpc.onconnectionstatechange = () => {
+    const st = vpc?.connectionState;
+    if (st === 'connected') { sendWs({ type: 'video-live', on: true }); setVideoMsg('\u2713 Listeners can see the video (sound off).', 'ok'); }
+    if (st === 'failed' || st === 'disconnected') { sendWs({ type: 'video-live', on: false }); setVideoMsg('The video connection dropped. The translation is not affected; press Pause and Start to retry.', 'bad'); }
+  };
+  await vpc.setLocalDescription(await vpc.createOffer());
+  await new Promise((r) => {   // gather network candidates (max 2 s), then send one offer
+    if (vpc.iceGatheringState === 'complete') return r();
+    const t = setTimeout(r, 2000);
+    vpc.addEventListener('icegatheringstatechange', () => { if (vpc?.iceGatheringState === 'complete') { clearTimeout(t); r(); } });
+  });
+  const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/sdp' }, body: vpc.localDescription.sdp });
+  if (!r.ok) throw new Error('Cloudflare answered ' + r.status);
+  const loc = r.headers.get('Location');
+  vLocation = loc ? new URL(loc, url).href : null;
+  await vpc.setRemoteDescription({ type: 'answer', sdp: await r.text() });
+}
+function stopVideo() {
+  if (!vpc) return;
+  sendWs({ type: 'video-live', on: false });
+  try { vpc.close(); } catch {}
+  vpc = null;
+  if (vLocation) fetch(vLocation, { method: 'DELETE' }).catch(() => {});
+  vLocation = null;
+  setVideoMsg('');
+}
 
 // ---------- optional recording of the captured Hindi audio ----------
 let recorder = null, recChunks = [], recStartedAt = null;

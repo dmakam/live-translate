@@ -12,6 +12,12 @@ const { WebSocketServer, WebSocket } = require('ws');
 
 const PORT = Number(process.env.PORT || 3000);
 const CLAUDE_KEY = process.env.ANTHROPIC_API_KEY || '';
+// Optional event video: the organiser's shared tab is sent to Cloudflare Stream (WebRTC) and
+// listeners watch it from Cloudflare, so the video never passes through this server.
+const CF_ACCOUNT = process.env.CF_ACCOUNT_ID || '';
+const CF_TOKEN = process.env.CF_STREAM_TOKEN || '';
+const CF_API = process.env.CF_API_URL || 'https://api.cloudflare.com/client/v4';
+const VIDEO_ON = Boolean(CF_ACCOUNT && CF_TOKEN);
 const CLAUDE_MODEL = process.env.CLAUDE_MODEL || 'claude-haiku-5-5';
 const TTS_URL = process.env.TTS_URL || '';           // e.g. http://live-translate-tts:8000 (natural AI voice)
 // Optional premium voice: ElevenLabs. Set ELEVENLABS_API_KEY and ELEVENLABS_VOICE_ID in .env.
@@ -82,7 +88,7 @@ function saveRooms() {
   saveTimer = setTimeout(() => {
     try {
       fs.mkdirSync(DATA_DIR, { recursive: true });
-      const out = [...rooms.values()].map(({ code, hostToken, title, startsAt, created, expiresAt, voice }) => ({ code, hostToken, title, startsAt, created, expiresAt, voice }));
+      const out = [...rooms.values()].map(({ code, hostToken, title, startsAt, created, expiresAt, voice, cf }) => ({ code, hostToken, title, startsAt, created, expiresAt, voice, cf }));
       fs.writeFileSync(ROOMS_FILE + '.tmp', JSON.stringify(out));
       fs.renameSync(ROOMS_FILE + '.tmp', ROOMS_FILE);
     } catch (e) { console.error('Could not save rooms:', e.message); }
@@ -103,20 +109,39 @@ function touch(room) {
   room.expiresAt = Math.max(room.expiresAt, Date.now() + LIMITS.roomHours * 3600e3);
 }
 
+// ---------- Cloudflare Stream live input (one per room, made the first time video is turned on) ----------
+async function cfLiveInput(room) {
+  if (room.cf) return room.cf;
+  const r = await fetch(`${CF_API}/accounts/${CF_ACCOUNT}/stream/live_inputs`, {
+    method: 'POST', headers: { Authorization: 'Bearer ' + CF_TOKEN, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ meta: { name: 'live-translate ' + room.code }, recording: { mode: 'off' } }), signal: AbortSignal.timeout(15000),
+  });
+  const j = await r.json().catch(() => ({}));
+  const res = j.result || {};
+  if (!r.ok || !res.webRTC?.url || !res.webRTCPlayback?.url) throw new Error('cloudflare ' + r.status + ' ' + JSON.stringify(j.errors || j).slice(0, 200));
+  room.cf = { uid: res.uid, publish: res.webRTC.url, play: res.webRTCPlayback.url };
+  saveRooms();
+  return room.cf;
+}
+function cfDelete(room) {
+  if (!room?.cf || !VIDEO_ON) return;
+  fetch(`${CF_API}/accounts/${CF_ACCOUNT}/stream/live_inputs/${room.cf.uid}`, { method: 'DELETE', headers: { Authorization: 'Bearer ' + CF_TOKEN } }).catch(() => {});
+}
+
 function sweepRooms() {
   const now = Date.now();
   let changed = false;
   for (const [code, r] of rooms) {
     if (now > r.expiresAt) {
       for (const c of r.clients) { try { c.send(JSON.stringify({ type: 'closed' })); c.close(); } catch {} }
-      rooms.delete(code); changed = true;
+      cfDelete(r); rooms.delete(code); changed = true;
     }
   }
   if (changed) saveRooms();
 }
 setInterval(sweepRooms, 60e3);
 
-const publicRoom = (r) => ({ code: r.code, title: r.title, startsAt: r.startsAt || null, live: !!r.live, expiresAt: r.expiresAt, voice: roomVoice(r), voices: listenerVoices(r), naturalVoice: tts.ready });
+const publicRoom = (r) => ({ code: r.code, title: r.title, startsAt: r.startsAt || null, live: !!r.live, expiresAt: r.expiresAt, voice: roomVoice(r), voices: listenerVoices(r), naturalVoice: tts.ready, video: r.videoOn && r.cf ? r.cf.play : null });
 
 // ---------- translation ----------
 const ipHits = new Map(); // ip -> [timestamps]
@@ -320,7 +345,7 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://x');
   const p = url.pathname;
 
-  if (p === '/api/config') return json(res, 200, { claude: Boolean(CLAUDE_KEY), roomHours: LIMITS.roomHours, advanceDays: LIMITS.advanceDays, tts: { ready: tts.ready, voices: tts.voices, defaultVoice: DEFAULT_VOICE }, stt: STT_ON ? 'elevenlabs' : 'chrome' });
+  if (p === '/api/config') return json(res, 200, { claude: Boolean(CLAUDE_KEY), roomHours: LIMITS.roomHours, advanceDays: LIMITS.advanceDays, tts: { ready: tts.ready, voices: tts.voices, defaultVoice: DEFAULT_VOICE }, stt: STT_ON ? 'elevenlabs' : 'chrome', video: VIDEO_ON });
 
   if (p === '/api/rooms' && req.method === 'POST') {
     sweepRooms();
@@ -471,6 +496,7 @@ function stats(room) {
   for (const c of room.clients) if (c.isHost) send(c, { type: 'stats', listeners: n });
 }
 function setLive(room, live) {
+  if (!live && room.videoOn) { room.videoOn = false; toListeners(room, { type: 'video', url: null }); }
   if (room.live === live) return;
   room.live = live;
   toListeners(room, { type: 'status', live });
@@ -498,6 +524,17 @@ wss.on('connection', (ws, req) => {
     let m; try { m = JSON.parse(raw); } catch { return; }
     if (m.type === 'stt-start') { if (STT_ON) startStt(room, ws); else send(ws, { type: 'stt-error', error: 'not configured' }); return; }
     if (m.type === 'stt-stop') { stopStt(room); return; }
+    if (m.type === 'video-start') {
+      if (!VIDEO_ON) return send(ws, { type: 'video-error', error: 'not configured' });
+      cfLiveInput(room).then((cf) => send(ws, { type: 'video-publish', url: cf.publish }))
+        .catch((e) => { console.error('video:', e.message); send(ws, { type: 'video-error', error: 'Cloudflare refused: ' + e.message.slice(0, 120) }); });
+      return;
+    }
+    if (m.type === 'video-live') {   // organiser's video is reaching Cloudflare (or stopped)
+      room.videoOn = !!m.on && !!room.cf;
+      toListeners(room, { type: 'video', url: room.videoOn ? room.cf.play : null });
+      return;
+    }
     if (m.type === 'status') {
       clearTimeout(room.offTimer);
       setLive(room, !!m.live); touch(room); saveRooms();
@@ -521,7 +558,7 @@ wss.on('connection', (ws, req) => {
     } else if (m.type === 'end') {
       toListeners(room, { type: 'closed' });
       for (const c of room.clients) try { c.close(); } catch {}
-      rooms.delete(room.code); saveRooms();
+      cfDelete(room); rooms.delete(room.code); saveRooms();
     }
   });
 
